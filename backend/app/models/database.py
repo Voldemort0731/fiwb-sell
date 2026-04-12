@@ -4,7 +4,7 @@ SQLAlchemy models and async DB initialization
 import os
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from sqlalchemy import String, Text, Float, Integer, DateTime, ForeignKey, Boolean
+from sqlalchemy import String, Text, Float, Integer, DateTime, ForeignKey, Boolean, LargeBinary
 from datetime import datetime, timezone
 from typing import Optional, List
 
@@ -49,6 +49,7 @@ class ChatThread(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True)
     title: Mapped[str] = mapped_column(String(500), default="New Chat")
+    folder_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
@@ -66,6 +67,7 @@ class ChatMessage(Base):
     attachment_name: Mapped[Optional[str]] = mapped_column(String(500))
     attachment_type: Mapped[Optional[str]] = mapped_column(String(100))
     image_base64: Mapped[Optional[str]] = mapped_column(Text)
+    citations: Mapped[Optional[str]] = mapped_column(Text) # JSON-encoded list of CitationData
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     thread: Mapped["ChatThread"] = relationship("ChatThread", back_populates="messages")
@@ -95,8 +97,10 @@ class Material(Base):
     course_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("courses.id"), nullable=True)
     title: Mapped[str] = mapped_column(String(500))
     content_preview: Mapped[Optional[str]] = mapped_column(Text)
-    full_text: Mapped[Optional[str]] = mapped_column(Text)  # Added for local raw storage
-    parent_external_id: Mapped[Optional[str]] = mapped_column(String(255)) # For grouping attachments
+    full_text: Mapped[Optional[str]] = mapped_column(Text)
+    file_content: Mapped[Optional[bytes]] = mapped_column(LargeBinary)  # THE "ACTUAL" FILE STORAGE
+    mime_type: Mapped[Optional[str]] = mapped_column(String(100))
+    parent_external_id: Mapped[Optional[str]] = mapped_column(String(255))
     material_type: Mapped[str] = mapped_column(String(50))  # assignment, announcement, material, file
     source: Mapped[str] = mapped_column(String(50))  # classroom, drive, gmail, moodle, chat_upload
     external_id: Mapped[Optional[str]] = mapped_column(String(255))
@@ -108,6 +112,22 @@ class Material(Base):
 
     user: Mapped["User"] = relationship("User", back_populates="materials")
     course: Mapped[Optional["Course"]] = relationship("Course", back_populates="materials")
+
+
+class MindMap(Base):
+    __tablename__ = "mind_maps"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True)
+    material_id: Mapped[int] = mapped_column(Integer, ForeignKey("materials.id"), index=True)
+    json_data: Mapped[str] = mapped_column(Text)            # current MindMapJSON as string
+    history_stack: Mapped[Optional[str]] = mapped_column(Text, default="[]")  # JSON array of past states
+    content_hash: Mapped[Optional[str]] = mapped_column(String(64))  # sha256 of doc text for staleness check
+    generated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    user: Mapped["User"] = relationship("User")
+    material: Mapped["Material"] = relationship("Material")
 
 
 async def init_db():

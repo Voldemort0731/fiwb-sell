@@ -177,16 +177,38 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                         desc = cw.get('description','')
                         doc = f"Course: {course.name}\nType: Assignment\nTitle: {title}\nDescription: {desc}\nDue: {cw.get('dueDate', {})}"
                         
-                        # Check for assignment duplicate
+                        # 1. Save to local DB first to get ID
                         cw_check = await db.execute(
                             select(Material).where(Material.user_id == user_id, Material.external_id == cw["id"])
                         )
                         existing_cw = cw_check.scalar_one_or_none()
                         
-                        sm_id = None
-                        if not existing_cw or not existing_cw.indexed_in_supermemory:
-                            # 1. Index assignment metadata
-                            cw_link = cw.get('alternateLink')
+                        cw_link = cw.get('alternateLink')
+                        cw_attachments = _extract_classroom_attachments(cw.get('materials', []))
+                        
+                        if existing_cw:
+                            mat_for_index = existing_cw
+                            # Update link/attachments if missing
+                            if not mat_for_index.source_link: mat_for_index.source_link = cw_link
+                            if not mat_for_index.attachments: mat_for_index.attachments = json.dumps(cw_attachments)
+                            await db.commit()
+                        else:
+                            mat_for_index = Material(
+                                user_id=user_id, course_id=course.id,
+                                title=title, material_type="assignment",
+                                source="classroom", external_id=cw["id"],
+                                content_preview=desc[:500],
+                                full_text=desc,
+                                indexed_in_supermemory=False,
+                                source_link=cw_link,
+                                attachments=json.dumps(cw_attachments),
+                            )
+                            db.add(mat_for_index)
+                            await db.commit()
+                            await db.refresh(mat_for_index)
+
+                        # 2. Index assignment metadata with material_id
+                        if not mat_for_index.indexed_in_supermemory:
                             sm_id = await get_sm_client().add_document(
                                 content=doc, 
                                 metadata={
@@ -194,12 +216,16 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                     "type": "academic_material", 
                                     "course": course.name, 
                                     "user_id": email,
+                                    "material_id": str(mat_for_index.id),
                                     "source_link": cw_link
                                 }, 
                                 user_email=email, 
                                 title=title,
                                 container_tag=f"user_{user_id}"
                             )
+                            if sm_id:
+                                mat_for_index.indexed_in_supermemory = True
+                                await db.commit()
                         
                         # 2. Deep Index Attachments & Embedded Links
                         cw_processed_ids = set()
@@ -255,6 +281,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                             "type": "academic_material", 
                                             "course": course.name, 
                                             "user_id": email,
+                                            "material_id": str(new_mat.id),
                                             "source_link": new_mat.source_link
                                         }, 
                                         user_email=email, 
@@ -309,6 +336,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                         "type": "academic_material",
                                         "course": course.name,
                                         "user_id": email,
+                                        "material_id": str(mat_to_index.id),
                                         "source_link": mat_to_index.source_link
                                     },
                                     user_email=email,
@@ -395,42 +423,56 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                         text = ann.get('text','')
                         doc = f"Course: {course.name}\nType: Announcement\nText: {text}"
                         
-                        # 1. Check for announcement duplicate
+                        # 1. Save locally first to get ID
+                        ann_id_raw = ann["id"]
                         ann_check = await db.execute(
-                            select(Material).where(Material.user_id == user_id, Material.external_id == ann["id"])
+                            select(Material).where(Material.user_id == user_id, Material.external_id == ann_id_raw)
                         )
                         existing_ann = ann_check.scalar_one_or_none()
-                        if existing_ann:
-                            updated = False
-                            if not existing_ann.source_link and ann.get('alternateLink'):
-                                existing_ann.source_link = ann.get('alternateLink')
-                                updated = True
-                            ann_atts_backfill = _extract_classroom_attachments(ann.get('materials', []))
-                            if (not existing_ann.attachments or existing_ann.attachments == '[]') and ann_atts_backfill:
-                                existing_ann.attachments = json.dumps(ann_atts_backfill)
-                                updated = True
-                            if updated:
-                                await db.commit()
-                            print(f"   ✅ [Skip] Announcement {ann['id']} already synced")
-                            continue
-
-                        # 1. Index the announcement text
-                        sm_id = await get_sm_client().add_document(doc, metadata={"source": "classroom", "type": "academic_material", "course": course.name, "user_id": email}, user_email=email, title=f"Announcement: {course.name}")
-
+                        
+                        ann_link = ann.get('alternateLink')
                         ann_attachments = _extract_classroom_attachments(ann.get('materials', []))
-                        mat = Material(
-                            user_id=user_id, course_id=course.id,
-                            title=f"Announcement: {course.name}", material_type="announcement",
-                            source="classroom", external_id=ann["id"],
-                            content_preview=text[:500],
-                            full_text=text,
-                            indexed_in_supermemory=bool(sm_id),
-                            source_link=ann.get('alternateLink'),
-                            attachments=json.dumps(ann_attachments),
-                            created_at=datetime.fromisoformat(ann.get("updateTime", ann.get("creationTime")).replace("Z", "+00:00")) if ann.get("creationTime") else datetime.now(timezone.utc),
-                        )
-                        db.add(mat)
-                        await db.commit()
+                        
+                        if existing_ann:
+                            ann_mat = existing_ann
+                            # Backfill missing info
+                            if not ann_mat.source_link: ann_mat.source_link = ann_link
+                            if not ann_mat.attachments: ann_mat.attachments = json.dumps(ann_attachments)
+                            await db.commit()
+                        else:
+                            ann_mat = Material(
+                                user_id=user_id, course_id=course.id,
+                                title=f"Announcement: {course.name}", material_type="announcement",
+                                source="classroom", external_id=ann_id_raw,
+                                content_preview=text[:500],
+                                full_text=text,
+                                indexed_in_supermemory=False,
+                                source_link=ann_link,
+                                attachments=json.dumps(ann_attachments),
+                                created_at=datetime.fromisoformat(ann.get("updateTime", ann.get("creationTime")).replace("Z", "+00:00")) if ann.get("creationTime") else datetime.now(timezone.utc),
+                            )
+                            db.add(ann_mat)
+                            await db.commit()
+                            await db.refresh(ann_mat)
+
+                        # 2. Index the announcement text with material_id
+                        if not ann_mat.indexed_in_supermemory:
+                            sm_id = await get_sm_client().add_document(
+                                doc, 
+                                metadata={
+                                    "source": "classroom", 
+                                    "type": "academic_material", 
+                                    "course": course.name, 
+                                    "user_id": email,
+                                    "material_id": str(ann_mat.id),
+                                    "source_link": ann_link
+                                }, 
+                                user_email=email, 
+                                title=f"Announcement: {course.name}"
+                            )
+                            if sm_id:
+                                ann_mat.indexed_in_supermemory = True
+                                await db.commit()
                         # 2. Deep Index attachments & Embedded Links
                         processed_file_ids = set()
                         
@@ -481,6 +523,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                             "course": course.name, 
                                             "user_id": email,
                                             "file_id": fid,
+                                            "material_id": str(new_mat.id),
                                             "source_link": new_mat.source_link
                                         }, 
                                         user_email=email, 
@@ -538,6 +581,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                         "course": course.name,
                                         "user_id": email,
                                         "file_id": df["id"],
+                                        "material_id": str(mat_to_index.id),
                                         "source_link": mat_to_index.source_link
                                     },
                                     user_email=email,
@@ -602,39 +646,55 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                         desc = cm.get('description','')
                         doc = f"Course: {course.name}\nType: Resource\nTitle: {title}\nDescription: {desc}"
                         
-                        # 1. Check for resource duplicate
+                        # 1. Save locally first to get ID
+                        cm_id_raw = cm["id"]
                         cm_check = await db.execute(
-                            select(Material).where(Material.user_id == user_id, Material.external_id == cm["id"])
+                            select(Material).where(Material.user_id == user_id, Material.external_id == cm_id_raw)
                         )
                         existing_cm = cm_check.scalar_one_or_none()
+                        
+                        cm_link = cm.get('alternateLink')
                         cm_attachments = _extract_classroom_attachments(cm.get('materials', []))
+                        
                         if existing_cm:
-                            updated = False
-                            if not existing_cm.source_link and cm.get('alternateLink'):
-                                existing_cm.source_link = cm.get('alternateLink')
-                                updated = True
-                            if (not existing_cm.attachments or existing_cm.attachments == '[]') and cm_attachments:
-                                existing_cm.attachments = json.dumps(cm_attachments)
-                                updated = True
-                            if updated:
+                            cm_mat = existing_cm
+                            # Backfill
+                            if not cm_mat.source_link: cm_mat.source_link = cm_link
+                            if not cm_mat.attachments: cm_mat.attachments = json.dumps(cm_attachments)
+                            await db.commit()
+                        else:
+                            cm_mat = Material(
+                                user_id=user_id, course_id=course.id,
+                                title=title, material_type="material",
+                                source="classroom", external_id=cm_id_raw,
+                                content_preview=desc[:500],
+                                full_text=desc,
+                                indexed_in_supermemory=False,
+                                source_link=cm_link,
+                                attachments=json.dumps(cm_attachments),
+                            )
+                            db.add(cm_mat)
+                            await db.commit()
+                            await db.refresh(cm_mat)
+
+                        # 2. Index the resource metadata with material_id
+                        if not cm_mat.indexed_in_supermemory:
+                            sm_id = await get_sm_client().add_document(
+                                doc, 
+                                metadata={
+                                    "source": "classroom", 
+                                    "type": "academic_material", 
+                                    "course": course.name, 
+                                    "user_id": email,
+                                    "material_id": str(cm_mat.id),
+                                    "source_link": cm_link
+                                }, 
+                                user_email=email, 
+                                title=title
+                            )
+                            if sm_id:
+                                cm_mat.indexed_in_supermemory = True
                                 await db.commit()
-                            print(f"   ✅ [Skip] Resource {cm['id']} already synced")
-                            continue
-
-                        # 1. Index the resource metadata
-                        sm_id = await get_sm_client().add_document(doc, metadata={"source": "classroom", "type": "academic_material", "course": course.name, "user_id": email}, user_email=email, title=title)
-
-                        # 2. Store in local DB
-                        db.add(Material(
-                            user_id=user_id, course_id=course.id,
-                            title=title, material_type="material",
-                            source="classroom", external_id=cm["id"],
-                            content_preview=desc[:500],
-                            full_text=desc,
-                            indexed_in_supermemory=bool(sm_id),
-                            source_link=cm.get('alternateLink'),
-                            attachments=json.dumps(cm_attachments),
-                        ))
 
                         # 3. Deep Index attachments & Embedded Links
                         resource_processed_ids = set()
@@ -683,6 +743,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                             "course": course.name, 
                                             "user_id": email,
                                             "file_id": fid,
+                                            "material_id": str(new_mat.id),
                                             "source_link": new_mat.source_link
                                         }, 
                                         user_email=email, 
@@ -706,12 +767,14 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                     continue
 
                                 print(f"     📎 [Attachment] Found in resource: {df['title']}")
-                                content = await _get_drive_file_content(drive_service, df['id'], df.get('mimeType', ''))
+                                content, raw_bytes = await _get_drive_file_content(drive_service, df['id'], df.get('mimeType', ''))
                                 backend_url = os.getenv('BACKEND_URL', 'http://localhost:8002')
 
                                 if existing:
                                     existing.full_text = content
                                     existing.content_preview = content[:500] if content else existing.content_preview
+                                    existing.file_content = raw_bytes
+                                    existing.mime_type = df.get('mimeType')
                                     await db.commit()
                                     mat_to_index = existing
                                 else:
@@ -722,6 +785,8 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                         parent_external_id=cm["id"],
                                         content_preview=content[:500] if content else None,
                                         full_text=content if content else None,
+                                        file_content=raw_bytes,
+                                        mime_type=df.get('mimeType'),
                                         indexed_in_supermemory=False,
                                         source_link=f"{backend_url}/profile/proxy/drive/0"
                                     )
@@ -740,6 +805,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                         "course": course.name,
                                         "user_id": email,
                                         "file_id": df["id"],
+                                        "material_id": str(mat_to_index.id),
                                         "source_link": mat_to_index.source_link
                                     },
                                     user_email=email,
@@ -779,10 +845,16 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                 )
                                 db.add(new_mat)
                                 await db.commit()
-                                await db.refresh(new_mat)
                                 await get_sm_client().add_document(
                                     f"Course: {course.name}\nResource: {title}\nYouTube video: {yt_title}\nURL: {yt_url}",
-                                    metadata={"source": "classroom", "type": "academic_material", "course": course.name, "user_id": email, "source_link": yt_url},
+                                    metadata={
+                                        "source": "classroom", 
+                                        "type": "academic_material", 
+                                        "course": course.name, 
+                                        "user_id": email, 
+                                        "material_id": str(new_mat.id),
+                                        "source_link": yt_url
+                                    },
                                     user_email=email, title=f"Video: {yt_title}", container_tag=f"user_{user_id}"
                                 )
                                 new_mat.indexed_in_supermemory = True
@@ -805,69 +877,37 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
 
 
 # ── Google Drive ──────────────────────────────────────────────────────────
-async def _get_drive_file_content(service, file_id: str, mime_type: str = "") -> str:
-    """Helper to extract text from Google Drive files for Classroom sync."""
+async def _get_drive_file_content(service, file_id: str, mime_type: str = "") -> tuple[str, Optional[bytes]]:
+    """Helper to extract text and binary from Google Drive files for Classroom sync."""
     async with GLOBAL_API_LOCK:
         try:
             if not mime_type:
                 meta = await asyncio.to_thread(lambda: service.files().get(fileId=file_id, fields="mimeType").execute())
                 mime_type = meta.get("mimeType", "")
 
+            raw_bytes = await asyncio.to_thread(lambda: service.files().get_media(fileId=file_id).execute())
+            
             if mime_type == "application/vnd.google-apps.document":
                 export = await asyncio.to_thread(lambda: service.files().export(fileId=file_id, mimeType="text/plain").execute())
-                return export.decode("utf-8", errors="replace")[:15000]
+                return export.decode("utf-8", errors="replace")[:15000], raw_bytes
             elif mime_type == "application/pdf":
                 import io
                 from pypdf import PdfReader
-                content = await asyncio.to_thread(lambda: service.files().get_media(fileId=file_id).execute())
-                reader = PdfReader(io.BytesIO(content))
-                return "\n".join(p.extract_text() or "" for p in reader.pages)[:15000]
+                reader = PdfReader(io.BytesIO(raw_bytes))
+                text = "\n".join(p.extract_text() or "" for p in reader.pages)[:15000]
+                return text, raw_bytes
             elif "google-apps" in mime_type:
                 try:
                     export = await asyncio.to_thread(lambda: service.files().export(fileId=file_id, mimeType="text/plain").execute())
-                    return export.decode("utf-8", errors="replace")[:10000]
-                except: return ""
+                    return export.decode("utf-8", errors="replace")[:10000], raw_bytes
+                except: return "", raw_bytes
             elif mime_type == "text/plain":
-                content = await asyncio.to_thread(lambda: service.files().get_media(fileId=file_id).execute())
-                return content.decode("utf-8", errors="replace")[:10000]
-            elif mime_type in (
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                "application/msword",
-                "application/vnd.ms-powerpoint",
-                "application/vnd.ms-excel",
-            ):
-                # Export Office files as plain text via Drive's conversion
-                try:
-                    export = await asyncio.to_thread(lambda: service.files().export(fileId=file_id, mimeType="text/plain").execute())
-                    return export.decode("utf-8", errors="replace")[:15000]
-                except Exception:
-                    pass
-                # Fallback: download raw bytes and try pypdf
-                try:
-                    import io
-                    from pypdf import PdfReader
-                    raw = await asyncio.to_thread(lambda: service.files().get_media(fileId=file_id).execute())
-                    reader = PdfReader(io.BytesIO(raw))
-                    return "\n".join(p.extract_text() or "" for p in reader.pages)[:15000]
-                except Exception:
-                    return ""
+                return raw_bytes.decode("utf-8", errors="replace")[:10000], raw_bytes
             else:
-                # Unknown mime type — try raw download and parse as PDF as last resort
-                try:
-                    import io
-                    from pypdf import PdfReader
-                    raw = await asyncio.to_thread(lambda: service.files().get_media(fileId=file_id).execute())
-                    reader = PdfReader(io.BytesIO(raw))
-                    text = "\n".join(p.extract_text() or "" for p in reader.pages)
-                    if text.strip():
-                        return text[:15000]
-                except Exception:
-                    pass
+                return "", raw_bytes
         except Exception as e:
-            logger.error(f"Drive Extraction Error {file_id}: {e}")
-    return ""
+            logger.error(f"Classroom file extraction error: {e}")
+            return "", None
 
 
 

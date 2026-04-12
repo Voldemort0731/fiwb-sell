@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FIWB Document Viewer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; background: #111; overflow: hidden; }
+
+    #viewer-container {
+      width: 100%;
+      height: 100%;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      scroll-behavior: smooth;
+    }
+
+    .page-wrapper {
+      position: relative;
+      background: #1e1e1e;
+      border-radius: 4px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+      overflow: hidden;
+      flex-shrink: 0;
+      margin: 0 auto;
+    }
+
+    .page-sentinel {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 1px;
+      pointer-events: none;
+    }
+
+    canvas {
+      display: block;
+      max-width: 100%;
+    }
+
+    .textLayer {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      overflow: hidden;
+      pointer-events: none;
+      line-height: 1.0;
+    }
+
+    .textLayer span {
+      color: transparent;
+      position: absolute;
+      white-space: pre;
+      cursor: text;
+      transform-origin: 0% 0%;
+    }
+
+    mark[data-highlight="true"] {
+      background: rgba(250, 200, 50, 0.45);
+      color: inherit;
+      border-radius: 2px;
+      padding: 0 1px;
+    }
+
+    #error-banner {
+      display: none;
+      position: fixed;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(220, 50, 50, 0.9);
+      color: #fff;
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-size: 13px;
+      z-index: 100;
+      max-width: 80%;
+      text-align: center;
+    }
+
+    #loading-overlay {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: rgba(255,255,255,0.4);
+      font-size: 14px;
+      font-family: system-ui, sans-serif;
+    }
+
+    .spinner {
+      width: 24px;
+      height: 24px;
+      border: 2px solid rgba(255,255,255,0.15);
+      border-top-color: rgba(139,92,246,0.8);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-right: 12px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .page-number-badge {
+      position: absolute;
+      top: 10px;
+      right: 12px;
+      background: rgba(0, 0, 0, 0.65);
+      backdrop-filter: blur(4px);
+      color: rgba(255,255,255,0.95);
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      font-family: system-ui, sans-serif;
+      z-index: 50;
+      pointer-events: none;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    }
+  </style>
+</head>
+<body>
+  <div id="error-banner"></div>
+  <div id="viewer-container">
+    <div id="loading-overlay">
+      <div class="spinner"></div>
+      Loading document…
+    </div>
+  </div>
+
+  <script type="module">
+    // ── PDF.js setup (local worker, no CDN) ─────────────────────────────
+    import * as pdfjsLib from '/viewer/pdf.mjs';
+    pdfjsLib.GlobalWorkerOptions.workerSrc = '/viewer/pdf.worker.min.mjs';
+
+    const PARENT_ORIGIN = window.location.origin;
+    const container = document.getElementById('viewer-container');
+    const errorBanner = document.getElementById('error-banner');
+
+    let pdfDoc = null;
+    let currentHighlightNodes = [];
+    let pageIntersectionObserver = null;
+    let pageVisibleTimeout = null;
+    let currentPage = null;
+
+    // ── Utility: get file URL from query string ──────────────────────────
+    function getFileUrl() {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('file');
+    }
+
+    // ── Reply to parent ──────────────────────────────────────────────────
+    function postToParent(msg) {
+      window.parent.postMessage(msg, PARENT_ORIGIN);
+    }
+
+    function showError(code, message) {
+      errorBanner.textContent = message;
+      errorBanner.style.display = 'block';
+      postToParent({ type: 'VIEWER_ERROR', code, message });
+    }
+
+    // ── Highlight cleanup ────────────────────────────────────────────────
+    function clearHighlights() {
+      for (const node of currentHighlightNodes) {
+        const parent = node.parentNode;
+        if (parent) {
+          // Unwrap <mark> — restore original text nodes
+          while (node.firstChild) parent.insertBefore(node.firstChild, node);
+          parent.removeChild(node);
+        }
+      }
+      currentHighlightNodes = [];
+    }
+
+    // ── Text search + highlight using TreeWalker ─────────────────────────
+    function highlightTextInContainer(textLayerDiv, searchText) {
+      if (!searchText || !textLayerDiv) return false;
+
+      const walker = document.createTreeWalker(
+        textLayerDiv,
+        NodeFilter.SHOW_TEXT,
+        null
+      );
+
+      // Collect all text nodes and their cumulative text
+      const nodes = [];
+      let fullText = '';
+      let node;
+      while ((node = walker.nextNode())) {
+        nodes.push({ node, start: fullText.length, end: fullText.length + node.textContent.length });
+        fullText += node.textContent;
+      }
+
+      const idx = fullText.indexOf(searchText);
+      if (idx === -1) return false;
+
+      const endIdx = idx + searchText.length;
+
+      // Find affected nodes
+      for (const entry of nodes) {
+        if (entry.end <= idx || entry.start >= endIdx) continue;
+
+        const localStart = Math.max(0, idx - entry.start);
+        const localEnd = Math.min(entry.node.textContent.length, endIdx - entry.start);
+
+        const parent = entry.node.parentNode;
+        if (!parent) continue;
+
+        const before = entry.node.textContent.slice(0, localStart);
+        const match = entry.node.textContent.slice(localStart, localEnd);
+        const after = entry.node.textContent.slice(localEnd);
+
+        const mark = document.createElement('mark');
+        mark.setAttribute('data-highlight', 'true');
+        mark.textContent = match;
+        currentHighlightNodes.push(mark);
+
+        const frag = document.createDocumentFragment();
+        if (before) frag.appendChild(document.createTextNode(before));
+        frag.appendChild(mark);
+        if (after) frag.appendChild(document.createTextNode(after));
+        parent.replaceChild(frag, entry.node);
+      }
+
+      return currentHighlightNodes.length > 0;
+    }
+
+    // ── Scroll to a page with offset ─────────────────────────────────────
+    function scrollToPage(pageNum) {
+      const sentinel = document.querySelector(`[data-page="${pageNum}"]`);
+      if (sentinel) {
+        // Use 'auto' (instant) for the initial page jump to avoid jitter during doc loading/resizing
+        sentinel.parentElement.scrollIntoView({ behavior: 'auto', block: 'start' });
+        // Precise vertical offset to account for the floating toolbar
+        container.scrollTop -= 70;
+      }
+    }
+
+
+    // ── Page IntersectionObserver ─────────────────────────────────────────
+    function initPageObserver() {
+      if (pageIntersectionObserver) pageIntersectionObserver.disconnect();
+
+      pageIntersectionObserver = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            const pg = parseInt(entry.target.dataset.page, 10);
+            if (pg === currentPage) continue;
+
+            clearTimeout(pageVisibleTimeout);
+            pageVisibleTimeout = setTimeout(() => {
+              currentPage = pg;
+              postToParent({ type: 'PAGE_VISIBLE', pageNumber: pg });
+            }, 300);
+          }
+        }
+      }, { root: container, rootMargin: "-49% 0px -49% 0px", threshold: 0 });
+
+      container.querySelectorAll('.page-wrapper').forEach(el => {
+        pageIntersectionObserver.observe(el);
+      });
+    }
+
+    // ── Resizing Logic ───────────────────────────────────────────────────
+    function updateLayoutToFitWidth() {
+      const containerWidth = container.clientWidth;
+      const targetWidth = Math.max(containerWidth - 32, 200);
+
+      document.querySelectorAll('.page-wrapper').forEach(wrapper => {
+        const originalWidth = parseFloat(wrapper.dataset.originalWidth);
+        const originalHeight = parseFloat(wrapper.dataset.originalHeight);
+        const pageBox = wrapper.parentElement;
+
+        if (originalWidth && pageBox) {
+          const scaleRatio = targetWidth / originalWidth;
+          
+          // Actual scaled dimensions
+          const scaledWidth = originalWidth * scaleRatio;
+          const scaledHeight = originalHeight * scaleRatio;
+
+          // Resize the wrapper's layout footprint
+          wrapper.style.transform = `scale(${scaleRatio})`;
+          wrapper.style.transformOrigin = '0 0';
+          
+          // Update the parent box to match the NEW scaled size precisely
+          pageBox.style.width = scaledWidth + 'px';
+          pageBox.style.height = scaledHeight + 'px';
+        }
+      });
+    }
+
+    const resizeObserver = new ResizeObserver(() => {
+      updateLayoutToFitWidth();
+    });
+    resizeObserver.observe(container);
+
+    // ── Render PDF ────────────────────────────────────────────────────────
+    async function renderPdf(url) {
+      container.innerHTML = '';
+      const loadingOverlay = document.createElement('div');
+      loadingOverlay.id = 'loading-overlay';
+      loadingOverlay.innerHTML = '<div class="spinner"></div>Loading document…';
+      container.appendChild(loadingOverlay);
+
+      try {
+        const loadingTask = pdfjsLib.getDocument({ url, withCredentials: false });
+        pdfDoc = await loadingTask.promise;
+      } catch (e) {
+        showError('DOC_LOAD_FAILED', `Failed to load document: ${e.message}`);
+        return;
+      }
+
+      container.innerHTML = ''; // clear loading
+      const totalPages = pdfDoc.numPages;
+
+      for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+        const page = await pdfDoc.getPage(pageNum);
+        // Render at high quality (2.0 scale) and scale down via CSS for sharpness
+        const viewport = page.getViewport({ scale: 2.0 });
+
+        const pageBox = document.createElement('div');
+        pageBox.className = 'page-box';
+        pageBox.style.width = '100%';
+        pageBox.style.display = 'flex';
+        pageBox.style.justifyContent = 'center';
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'page-wrapper';
+        wrapper.dataset.page = pageNum;
+        wrapper.dataset.originalWidth = viewport.width;
+        wrapper.dataset.originalHeight = viewport.height;
+        wrapper.style.width = viewport.width + 'px';
+        wrapper.style.height = viewport.height + 'px';
+
+        // Page sentinel for IntersectionObserver
+        const sentinel = document.createElement('div');
+        sentinel.className = 'page-sentinel';
+        sentinel.dataset.page = pageNum;
+        wrapper.appendChild(sentinel);
+
+        // Canvas
+        const canvas = document.createElement('canvas');
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        wrapper.appendChild(canvas);
+
+        // Text layer
+        const textLayerDiv = document.createElement('div');
+        textLayerDiv.className = 'textLayer';
+        textLayerDiv.style.width = viewport.width + 'px';
+        textLayerDiv.style.height = viewport.height + 'px';
+        wrapper.appendChild(textLayerDiv);
+
+        // Page Number Overlay Badge
+        const badge = document.createElement('div');
+        badge.className = 'page-number-badge';
+        badge.textContent = `Page ${pageNum}`;
+        wrapper.appendChild(badge);
+
+        pageBox.appendChild(wrapper);
+        container.appendChild(pageBox);
+
+        // Render page
+        const ctx = canvas.getContext('2d');
+        await page.render({ canvasContext: ctx, viewport }).promise;
+
+        // Render text layer
+        const textContent = await page.getTextContent();
+        const textLayer = new pdfjsLib.TextLayer({
+          textContentSource: textContent,
+          container: textLayerDiv,
+          viewport,
+        });
+        await textLayer.render();
+      }
+
+      initPageObserver();
+      setTimeout(updateLayoutToFitWidth, 50);
+      postToParent({ type: 'VIEWER_READY' });
+    }
+
+    // ── Scroll to passage after doc loads ────────────────────────────────
+    async function scrollToPassage(passageId, pageNumber, highlightText) {
+      clearHighlights();
+      scrollToPage(pageNumber);
+
+      setTimeout(() => {
+        const pageWrappers = container.querySelectorAll('.page-wrapper');
+        const targetWrapper = pageWrappers[pageNumber - 1];
+        if (!targetWrapper) return;
+
+        const textLayer = targetWrapper.querySelector('.textLayer');
+        if (textLayer && highlightText) {
+          const found = highlightTextInContainer(textLayer, highlightText);
+          if (found && currentHighlightNodes.length > 0) {
+            currentHighlightNodes[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+            postToParent({ type: 'PASSAGE_READY', passageId });
+            return;
+          }
+        }
+        postToParent({ type: 'PASSAGE_READY', passageId });
+      }, 600);
+    }
+
+    // ── postMessage listener ──────────────────────────────────────────────
+    window.addEventListener('message', (event) => {
+      if (event.origin !== PARENT_ORIGIN) return;
+      const { type, passageId, pageNumber, highlightText, zoomType } = event.data ?? {};
+      switch (type) {
+        case 'SCROLL_TO_PASSAGE':
+          scrollToPassage(passageId, pageNumber, highlightText);
+          break;
+        case 'CLEAR_HIGHLIGHT':
+          clearHighlights();
+          break;
+        case 'RESIZE_VIEWER':
+          updateLayoutToFitWidth();
+          break;
+        case 'SET_ZOOM':
+          if (zoomType === 'fit') updateLayoutToFitWidth();
+          // implement in/out if needed, for now fit is the priority
+          break;
+      }
+    });
+
+    // ── Init ──────────────────────────────────────────────────────────────
+    const fileUrl = getFileUrl();
+    if (fileUrl) {
+      renderPdf(decodeURIComponent(fileUrl));
+    } else {
+      showError('DOC_LOAD_FAILED', 'No document URL provided.');
+    }
+
+  </script>
+</body>
+</html>

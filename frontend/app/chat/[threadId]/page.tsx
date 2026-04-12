@@ -1,15 +1,27 @@
 "use client";
-import { useState, useEffect, useRef, use } from "react";
-import { useSearchParams } from "next/navigation";
+import { useState, useEffect, useRef, use, useCallback } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import { api } from "@/lib/api";
-import { 
-  Paperclip, Send, Loader2, Pencil, Trash2, X, Maximize2, ExternalLink, 
-  Copy, MessageSquare, Check 
+import { useViewerStore, getViewerContextSnapshot } from "@/lib/viewer-store";
+import DocumentViewer from "@/components/DocumentViewer";
+import MindMapPanel from "@/components/MindMapPanel";
+import { useMindMapStore } from "@/lib/mindmap-store";
+import {
+  Paperclip, Send, Loader2, Pencil, Trash2, X, Maximize2, ExternalLink,
+  Copy, MessageSquare, Check, BookOpen, ArrowUp, ImagePlus
 } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import clsx from "clsx";
+
+
+
+
+import CitationChip from "@/components/CitationChip";
+import { CitationData } from "@/lib/viewer-store";
 
 interface Message {
   id?: number;
@@ -17,6 +29,7 @@ interface Message {
   content: string;
   attachment_name?: string;
   image_base64?: string;
+  citations?: CitationData[];  // populated after stream_end
 }
 
 const fileToBase64 = (file: File): Promise<string> => {
@@ -31,6 +44,7 @@ const fileToBase64 = (file: File): Promise<string> => {
 export default function ChatThread({ params }: { params: Promise<{ threadId: string }> }) {
   const { threadId } = use(params);
   const searchParams = useSearchParams();
+  const router = useRouter();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
@@ -42,9 +56,44 @@ export default function ChatThread({ params }: { params: Promise<{ threadId: str
   const [editingMessageId, setEditingMessageId] = useState<number | null>(null);
   const [editInput, setEditInput] = useState("");
   const [copiedId, setCopiedId] = useState<number | string | null>(null);
+  // Citations buffer: arrives after stream_end, before done
+  const pendingCitationsRef = useRef<CitationData[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
+  const savedScrollRef = useRef<number>(0);
+
+  // Viewer state — for split layout
+  const isFileOpen = useViewerStore((state) => state.isOpen);
+  const setViewerWidth = useViewerStore((state) => state.setViewerWidth);
+  const viewerWidth = useViewerStore((state) => state.viewerWidth);
+  const viewerOnLeft = useViewerStore((state) => state.viewerOnLeft);
+
+  // Mind map state & actions
+  const isMindMapOpen = useMindMapStore(state => state.isOpen);
+  const mindMapWidth = useMindMapStore(state => state.mindMapWidth);
+  const setMindMapWidth = useMindMapStore(state => state.setMindMapWidth);
+  const openMap = useMindMapStore(state => state.openMap);
+  const closeMindMap = useMindMapStore(state => state.closeMap);
+  const setMindMapData = useMindMapStore(state => state.setData);
+  const setMindMapLoading = useMindMapStore(state => state.setLoading);
+
+
+
+  // Save scroll before panel opens, restore after it closes
+  useEffect(() => {
+    if (isFileOpen) {
+      savedScrollRef.current = chatContainerRef.current?.scrollTop ?? 0;
+    } else {
+      // Restore on next tick after layout reflows
+      requestAnimationFrame(() => {
+        if (chatContainerRef.current) {
+          chatContainerRef.current.scrollTop = savedScrollRef.current;
+        }
+      });
+    }
+  }, [isFileOpen]);
 
   // Load messages
   useEffect(() => {
@@ -108,6 +157,66 @@ export default function ChatThread({ params }: { params: Promise<{ threadId: str
     return () => document.removeEventListener("mouseup", handleMouseUp);
   }, []);
 
+  // ── Drag to Resize Logic (Viewer) ──
+  const startViewerResizing = useCallback((mouseDownEvent: React.MouseEvent) => {
+    mouseDownEvent.preventDefault();
+    const onMouseMove = (mouseMoveEvent: MouseEvent) => {
+      const windowWidth = document.documentElement.clientWidth;
+      let newWidthPx = viewerOnLeft ? mouseMoveEvent.clientX : (windowWidth - mouseMoveEvent.clientX);
+      let newWidthPercent = (newWidthPx / windowWidth) * 100;
+      if (newWidthPercent < 15) newWidthPercent = 15;
+      if (newWidthPercent > 70) newWidthPercent = 70;
+      setViewerWidth(newWidthPercent);
+    };
+    const onMouseUp = () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+      document.body.style.cursor = 'default';
+      document.body.style.userSelect = 'auto';
+    };
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  }, [viewerOnLeft, setViewerWidth]);
+
+  const toggleMindMap = () => {
+    if (isMindMapOpen) closeMindMap();
+    else if (docId) openMap(docId);
+  };
+
+  const toggleDocViewer = () => {
+    // We toggle isOpen directly in store, but need a docId
+    useViewerStore.setState({ isOpen: !isFileOpen });
+  };
+
+
+  // ── Drag to Resize Logic (Mind Map) ──
+
+
+  const startMindMapResizing = useCallback((mouseDownEvent: React.MouseEvent) => {
+    mouseDownEvent.preventDefault();
+    const onMouseMove = (mouseMoveEvent: MouseEvent) => {
+      const windowWidth = document.documentElement.clientWidth;
+      let newWidthPx = windowWidth - mouseMoveEvent.clientX;
+      let newWidthPercent = (newWidthPx / windowWidth) * 100;
+      if (newWidthPercent < 15) newWidthPercent = 15;
+      if (newWidthPercent > 70) newWidthPercent = 70;
+      setMindMapWidth(newWidthPercent);
+    };
+    const onMouseUp = () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+      document.body.style.cursor = 'default';
+      document.body.style.userSelect = 'auto';
+    };
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  }, [setMindMapWidth]);
+
+
   const copyToClipboard = (text: string, id: number | string) => {
     navigator.clipboard.writeText(text);
     setCopiedId(id);
@@ -118,6 +227,11 @@ export default function ChatThread({ params }: { params: Promise<{ threadId: str
     let content = (text || input).trim();
     if (!content && !file && !quotedText) return;
     if (streaming) return;
+
+    // --- PART 5: Snapshot viewer context at send time ---
+    const viewerCtx = getViewerContextSnapshot();
+    const shouldInjectContext = !!viewerCtx;
+
 
     if (quotedText) {
       content = `Regarding: "${quotedText}"\n\n${content}`;
@@ -131,13 +245,14 @@ export default function ChatThread({ params }: { params: Promise<{ threadId: str
       try {
         const newThread = await api.post("/chat/threads", { title: content.slice(0, 30) });
         activeThreadId = newThread.id.toString();
-        // Update URL to the real thread ID without reloading
-        window.history.replaceState(null, "", `/chat/${activeThreadId}`);
+        // Force URL update to anchor the history before sending the message payload
+        router.push(`/chat/${activeThreadId}`, { scroll: false });
       } catch (err) {
         console.error("Failed to create thread:", err);
         return;
       }
     }
+
 
     let imageBase64: string | undefined = undefined;
     const currentFile = file;
@@ -183,12 +298,16 @@ export default function ChatThread({ params }: { params: Promise<{ threadId: str
       if (imageBase64) {
         payload.image_base64 = imageBase64;
       }
+      if (shouldInjectContext && viewerCtx) {
+        payload.viewer_context = viewerCtx;
+      }
       const res = await api.stream("/chat/send", payload);
       if (!res.body) throw new Error("No body");
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
       let full = "";
+      const hasOpenedDocRef = { current: false };
 
       while (true) {
         const { done, value } = await reader.read();
@@ -214,12 +333,56 @@ export default function ChatThread({ params }: { params: Promise<{ threadId: str
             } else if (data.type === "triage") setIntent(data.intent);
             else if (data.type === "chunk") {
               full += data.content;
+              
+              const openMatch = full.match(/<<OPEN:([^>]+)>>/);
+              if (openMatch && !hasOpenedDocRef.current) {
+                const passageId = openMatch[1];
+                const citation = pendingCitationsRef.current.find((c) => c.passageId === passageId);
+                if (citation) {
+                  useViewerStore.getState().openViewer(citation);
+                  hasOpenedDocRef.current = true;
+                }
+              }
+              // Strip the command snippet from the visible state if present
+              setStreamContent(full.replace(/<<OPEN:[^>]+>>/g, ""));
+            } else if (data.type === "stream_end") {
+              // Text is frozen — citation replacement pass will follow
               setStreamContent(full);
+            } else if (data.type === "citations") {
+              pendingCitationsRef.current = data.data ?? [];
             } else if (data.type === "done") {
-              setMessages((prev) => [...prev, { role: "assistant", content: full }]);
+              const finalCitations = [...pendingCitationsRef.current];
+              setMessages((prev) => [
+                ...prev,
+                {
+                  role: "assistant",
+                  content: full.replace(/<<OPEN:[^>]+>>/g, ""),
+                  citations: finalCitations,
+                },
+              ]);
+              pendingCitationsRef.current = [];
               setStreamContent("");
               setStreaming(false);
               setIntent(null);
+            } else if (data.type === "mind_map_action") {
+              const { action, docId: mmDocId, instruction } = data;
+              if (action === "close") {
+                closeMindMap();
+              } else if (action === "open") {
+                if (mmDocId) openMap(mmDocId);
+              } else if (action === "regenerate") {
+                if (mmDocId) { openMap(mmDocId); }
+              } else if (action === "edit" && mmDocId && instruction) {
+                setMindMapLoading(true);
+                api.patch(`/mindmap/${mmDocId}/edit`, { instruction })
+                  .then((res: any) => setMindMapData(res.data, res.generated_at, res.can_undo))
+                  .catch(() => setMindMapLoading(false));
+              } else if (action === "undo" && mmDocId) {
+                setMindMapLoading(true);
+                api.post(`/mindmap/${mmDocId}/undo`)
+                  .then((res: any) => setMindMapData(res.data, res.generated_at, res.can_undo))
+                  .catch(() => setMindMapLoading(false));
+              }
             } else if (data.type === "error") {
               setMessages((prev) => [...prev, { role: "assistant", content: `Error: ${data.message}` }]);
               setStreaming(false);
@@ -324,25 +487,129 @@ export default function ChatThread({ params }: { params: Promise<{ threadId: str
     // 2. Convert \[ ... \] to $$ ... $$ (Block)
     processed = processed.replace(/\\\[(.*?)\\\]/g, (_, group) => `$$\n${group}\n$$`);
     // 3. Handle cases where the LLM might use literal parentheses ( \mathbb{N} ) from legacy context
-    // We only do this if it contains a backslash and some known LaTeX command to avoid breaking regular text
     processed = processed.replace(/\((?=\s*\\)(.*?)\)/g, (_, group) => `$${group}$`);
     return processed;
   };
 
+  /**
+   * Render a message content string with citation chips replacing [[cite:passageId]] markers.
+   * Only called AFTER citations array is available (not during streaming).
+   */
+  const renderMessageContent = (content: string, citations?: CitationData[]) => {
+    // If no specific citations array, try to find [[cite:...]] and render them inert
+    // But if we have citations, we match them.
+    if (!citations || citations.length === 0) {
+      const parts = content.split(/(\[\[cite:[^\]]+\]\])/g);
+      if (parts.length === 1) {
+        return (
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm, remarkMath]}
+            rehypePlugins={[rehypeKatex]}
+            components={{ a: ({ node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" /> }}
+          >
+            {preprocessMarkdown(content)}
+          </ReactMarkdown>
+        );
+      }
+      
+      return (
+        <>
+          {parts.map((part, i) => {
+            const match = part.match(/^\[\[cite:([^\]]+)\]\]$/);
+            if (match) {
+              return <span key={i} style={{ opacity: 0.5, fontSize: "0.8em", background: "rgba(139,92,246,0.1)", padding: "2px 6px", borderRadius: 4, margin: "0 2px" }}>[ref]</span>;
+            }
+            return part ? (
+              <ReactMarkdown
+                key={i}
+                remarkPlugins={[remarkGfm, remarkMath]}
+                rehypePlugins={[rehypeKatex]}
+                components={{ a: ({ node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" /> }}
+              >
+                {preprocessMarkdown(part)}
+              </ReactMarkdown>
+            ) : null;
+          })}
+        </>
+      );
+    }
+
+    // Build a map of passageId → CitationData
+    const citationById = new Map(citations.map((c) => [c.passageId, c]));
+
+    // Split on [[cite:passageId]] placeholders
+    const parts = content.split(/(\[\[cite:[^\]]+\]\])/g);
+
+    return (
+      <>
+        {parts.map((part, i) => {
+          const match = part.match(/^\[\[cite:([^\]]+)\]\]$/);
+          if (match) {
+            const passageId = match[1];
+            const citation = citationById.get(passageId);
+            if (citation) {
+              return <CitationChip key={i} citation={citation} />;
+            }
+            // Placeholder arrived but no matching citation — render inert
+            return <span key={i} style={{ opacity: 0.5, fontSize: "0.8em", background: "rgba(139,92,246,0.1)", padding: "2px 6px", borderRadius: 4, margin: "0 2px" }}>[ref]</span>;
+          }
+          // Regular text segment — pass through ReactMarkdown
+          return part ? (
+            <ReactMarkdown
+              key={i}
+              remarkPlugins={[remarkGfm, remarkMath]}
+              rehypePlugins={[rehypeKatex]}
+              components={{ a: ({ node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" /> }}
+            >
+              {preprocessMarkdown(part)}
+            </ReactMarkdown>
+          ) : null;
+        })}
+      </>
+    );
+  };
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
+    <div className="flex w-full h-full overflow-hidden bg-[#020202] text-white">
+      {/* Dynamic Workspace Container */}
+      <div 
+        className={clsx(
+          "flex flex-1 overflow-hidden relative w-full h-full",
+          viewerOnLeft ? "flex-row-reverse" : "flex-row"
+        )}
+      >
+
+
+    {/* ── Left: Chat Panel ── */}
+    <div
+      style={{
+        flex: 1,
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+        minWidth: 0,
+      }}
+    >
       {/* Intent indicator */}
       {intent && (
-        <div style={{ padding: "6px 24px", background: "rgba(139,92,246,0.08)", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-          <span style={{ width: 7, height: 7, borderRadius: "50%", background: intent === "academic" ? "#10b981" : "#f59e0b", display: "inline-block" }} />
-          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-            {intent === "academic" ? "🎓 Academic query — searching course materials…" : "💬 General query — answering from knowledge base…"}
+        <div className="mx-6 mt-4 p-3 rounded-2xl bg-white/[0.03] backdrop-blur-md border border-white/5 flex items-center gap-3 animate-in fade-in slide-in-from-top-2 duration-500">
+          <div className={clsx(
+            "w-2 h-2 rounded-full shadow-[0_0_10px_rgba(0,0,0,0.5)]",
+            intent === "academic" ? "bg-emerald-500 shadow-emerald-500/50" : "bg-amber-500 shadow-amber-500/50"
+          )} />
+          <span className="text-[11px] font-bold uppercase tracking-wider text-white/40">
+            {intent === "academic" ? "Deep Material Scan Active" : "General Intelligence Mode"}
           </span>
         </div>
       )}
 
       {/* Messages */}
-      <div style={{ flex: 1, overflowY: "auto", padding: "24px 24px 0" }}>
+      <div 
+        ref={chatContainerRef} 
+        className="flex-1 overflow-y-auto px-6 py-4 space-y-6 scroll-smooth"
+        style={{ scrollbarWidth: 'none' }}
+      >
+
         {messages.length === 0 && !streaming && (
           <div style={{ textAlign: "center", marginTop: 80, color: "var(--text-muted)" }}>
             <div style={{ fontSize: 40, marginBottom: 12 }}>✦</div>
@@ -350,7 +617,7 @@ export default function ChatThread({ params }: { params: Promise<{ threadId: str
           </div>
         )}
 
-        <div style={{ maxWidth: 760, margin: "0 auto", display: "flex", flexDirection: "column", gap: 20 }}>
+        <div style={{ width: "100%", padding: "0 12px", display: "flex", flexDirection: "column", gap: 12 }}>
           {messages.map((msg, i) => (
             <div key={i} className="fade-in" style={{ display: "flex", flexDirection: "column", alignItems: msg.role === "user" ? "flex-end" : "flex-start" }}>
               {msg.role === "user" ? (
@@ -414,16 +681,10 @@ export default function ChatThread({ params }: { params: Promise<{ threadId: str
                 <div style={{ display: "flex", gap: 12, alignItems: "flex-start", width: "100%" }}>
                   <div style={{ width: 30, height: 30, borderRadius: 9, background: "linear-gradient(135deg,#8b5cf6,#06b6d4)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, flexShrink: 0, marginTop: 2 }}>🧠</div>
                   <div className="msg-ai prose-ai" style={{ flex: 1 }}>
-                    <ReactMarkdown 
-                      remarkPlugins={[remarkGfm, remarkMath]} 
-                      rehypePlugins={[rehypeKatex]}
-                      components={{
-                        a: ({ node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />
-                      }}
-                    >
-                      {preprocessMarkdown(msg.content)}
-                    </ReactMarkdown>
-                    
+                    {renderMessageContent(msg.content, msg.citations)}
+
+
+
                     <div style={{ display: "flex", gap: 16, marginTop: 12, opacity: 0.6, borderTop: "1px solid rgba(0,0,0,0.03)", paddingTop: 8 }}>
                       <button 
                         onClick={() => copyToClipboard(msg.content, msg.id || i)}
@@ -458,15 +719,8 @@ export default function ChatThread({ params }: { params: Promise<{ threadId: str
               <div className="msg-ai prose-ai" style={{ flex: 1 }}>
                 {streamContent ? (
                   <>
-                    <ReactMarkdown 
-                      remarkPlugins={[remarkGfm, remarkMath]} 
-                      rehypePlugins={[rehypeKatex]}
-                      components={{
-                        a: ({ node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />
-                      }}
-                    >
-                      {preprocessMarkdown(streamContent)}
-                    </ReactMarkdown>
+                    {/* Use renderMessageContent for streaming text too, so chips appear immediately after stream_end */}
+                    {renderMessageContent(streamContent, pendingCitationsRef.current)}
                     <span className="typing-cursor" />
                   </>
                 ) : (
@@ -519,8 +773,8 @@ export default function ChatThread({ params }: { params: Promise<{ threadId: str
       )}
 
       {/* Input area */}
-      <div style={{ padding: "16px 24px 20px", flexShrink: 0 }}>
-        <div style={{ maxWidth: 760, margin: "0 auto" }}>
+      <div style={{ padding: "12px", flexShrink: 0 }}>
+        <div style={{ width: "100%" }}>
           {/* Quote display */}
           {quotedText && (
             <div style={{ 
@@ -607,6 +861,87 @@ export default function ChatThread({ params }: { params: Promise<{ threadId: str
           </p>
         </div>
       </div>
+    </div> {/* End left chat panel */}
+
+    <AnimatePresence mode="popLayout">
+      {/* ── Document Viewer Panel ── */}
+      {isFileOpen && (
+        <>
+          <div
+            onMouseDown={startViewerResizing}
+            className="resizer-handle w-px h-full cursor-col-resize z-50 bg-white/5 hover:bg-purple-500/50 transition-colors relative"
+          >
+            <div className="absolute inset-y-0 -left-1 -right-1" /> {/* Larger hit area */}
+            <div className="resizer-dots !left-1/2 -translate-x-1/2">
+              <div className="resizer-dot" /><div className="resizer-dot" /><div className="resizer-dot" />
+            </div>
+          </div>
+
+          
+          <motion.div 
+            initial={{ width: 0, opacity: 0 }}
+            animate={{ width: `${viewerWidth}%`, opacity: 1 }}
+            exit={{ width: 0, opacity: 0 }}
+            transition={{ type: "spring", bounce: 0, duration: 0.4 }}
+            className="h-full overflow-hidden bg-[#0a0a0a] relative"
+          >
+            <DocumentViewer />
+          </motion.div>
+        </>
+      )}
+
+      {/* ── Mind Map Panel ── */}
+      {isMindMapOpen && (
+        <>
+          <div
+            onMouseDown={startMindMapResizing}
+            className="resizer-handle w-px h-full cursor-col-resize z-50 bg-white/5 hover:bg-purple-500/50 transition-colors relative"
+          >
+            <div className="absolute inset-y-0 -left-1 -right-1" /> {/* Larger hit area */}
+            <div className="resizer-dots !left-1/2 -translate-x-1/2">
+              <div className="resizer-dot" /><div className="resizer-dot" /><div className="resizer-dot" />
+            </div>
+          </div>
+
+
+          <motion.div 
+            initial={{ width: 0, opacity: 0 }}
+            animate={{ width: `${mindMapWidth}%`, opacity: 1 }}
+            exit={{ width: 0, opacity: 0 }}
+            transition={{ type: "spring", bounce: 0, duration: 0.4 }}
+            className="h-full overflow-hidden border-l border-white/5 relative bg-[#020202]"
+          >
+            <MindMapPanel onChatInject={(text) => { setInput(text); textareaRef.current?.focus(); }} />
+          </motion.div>
+        </>
+      )}
+    </AnimatePresence>
+
+    {/* Mobile: stack vertically */}
+    <style>{`
+      @media (prefers-reduced-motion: reduce) {
+        div[style*="transition"] { transition: none !important; }
+      }
+      @media (max-width: 767px) {
+        #doc-viewer-panel, #mindmap-panel {
+          position: fixed !important;
+          bottom: 0 !important;
+          left: 0 !important;
+          right: 0 !important;
+          width: 100% !important;
+          height: 50vh !important;
+          z-index: 200 !important;
+          border-left: none !important;
+          border-top: 1px solid var(--border) !important;
+        }
+      }
+      @keyframes shimmer {
+        0%, 100% { opacity: 0.4; }
+        50% { opacity: 0.8; }
+      }
+    `}</style>
+      </div>
     </div>
   );
 }
+

@@ -4,8 +4,15 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/auth-store";
 import { api } from "@/lib/api";
+import { ChevronDown, ChevronRight, Folder, FolderOpen, Pencil, Trash2, Plus } from "lucide-react";
 
-interface Thread { id: number; title: string; updated_at: string; }
+interface Thread { id: number; title: string; folder_name?: string; updated_at: string; }
+interface TreeNode {
+  name: string;
+  fullPath: string;
+  children: Record<string, TreeNode>;
+  threads: Thread[];
+}
 
 const NAV_ITEMS = [
   { href: "/chat", label: "Home", icon: "⌂" },
@@ -19,6 +26,11 @@ function ThreadItem({ t, pathname, setShowProfile, refreshThreads }: any) {
   const [title, setTitle] = useState(t.title);
   const [isHovered, setIsHovered] = useState(false);
   const router = useRouter();
+
+  const handleDragStart = (e: React.DragEvent) => {
+    e.dataTransfer.setData("threadId", t.id.toString());
+    e.dataTransfer.effectAllowed = "move";
+  };
 
   const handleRename = async () => {
     if (!title.trim() || title === t.title) {
@@ -54,7 +66,9 @@ function ThreadItem({ t, pathname, setShowProfile, refreshThreads }: any) {
   return (
     <div 
       className={`sidebar-nav-item ${pathname === `/chat/${t.id}` ? "active" : ""}`}
-      style={{ fontSize: 13, position: "relative", display: "flex", alignItems: "center", paddingRight: isHovered ? "50px" : "12px", transition: "padding 0.2s" }}
+      draggable={!isEditing}
+      onDragStart={handleDragStart}
+      style={{ fontSize: 13, position: "relative", display: "flex", alignItems: "center", paddingRight: isHovered ? "50px" : "12px", transition: "padding 0.2s", cursor: isEditing ? "text" : "grab" }}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
@@ -110,6 +124,69 @@ export default function Sidebar({ collapsed, setCollapsed }: { collapsed: boolea
   const { user, logout } = useAuthStore();
   const [threads, setThreads] = useState<Thread[]>([]);
   const [showProfile, setShowProfile] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
+  const [customFolderNames, setCustomFolderNames] = useState<string[]>([]);
+  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
+  const [editingFolder, setEditingFolder] = useState<string | null>(null);
+  const [folderEditValue, setFolderEditValue] = useState("");
+
+  // Helper to build a recursive tree from paths
+  const buildTree = (threadList: Thread[], extraFolders: string[]) => {
+    const root: Record<string, TreeNode> = {};
+
+    const getOrCreateNode = (path: string) => {
+      const parts = path.split("/");
+      let current = root;
+      let fullPath = "";
+
+      for (let i = 0; i < parts.length; i++) {
+        const part = parts[i];
+        fullPath = fullPath ? `${fullPath}/${part}` : part;
+        if (!current[part]) {
+          current[part] = { name: part, fullPath, children: {}, threads: [] };
+        }
+        if (i < parts.length - 1) {
+          current = current[part].children;
+        } else {
+          return current[part];
+        }
+      }
+      return null;
+    };
+
+    // Add empty explicit folders
+    extraFolders.forEach(path => getOrCreateNode(path));
+
+    // Distribute threads
+    const chrono: { Today: Thread[], Yesterday: Thread[], Earlier: Thread[] } = { Today: [], Yesterday: [], Earlier: [] };
+    const todayStr = new Date().toDateString();
+    const yesterdayTime = new Date().getTime() - 86400000;
+    const yesterdayStr = new Date(yesterdayTime).toDateString();
+
+    threadList.forEach(t => {
+      if (t.folder_name) {
+        const node = getOrCreateNode(t.folder_name);
+        if (node) node.threads.push(t);
+      } else {
+        const d = new Date(t.updated_at).toDateString();
+        if (d === todayStr) chrono.Today.push(t);
+        else if (d === yesterdayStr) chrono.Yesterday.push(t);
+        else chrono.Earlier.push(t);
+      }
+    });
+
+    return { tree: root, chrono };
+  };
+
+  const toggleFolder = (name: string) => {
+    setCollapsedFolders(prev => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
 
   const fetchThreads = async () => {
     try {
@@ -126,17 +203,146 @@ export default function Sidebar({ collapsed, setCollapsed }: { collapsed: boolea
     return () => clearInterval(interval);
   }, []);
 
-  // Group threads by date
-  const today = new Date().toDateString();
-  const dNow = new Date().getTime();
-  const yesterday = new Date(dNow - 86400000).toDateString();
-  const grouped: Record<string, Thread[]> = { Today: [], Yesterday: [], Earlier: [] };
-  threads.forEach((t) => {
-    const d = new Date(t.updated_at).toDateString();
-    if (d === today) grouped.Today.push(t);
-    else if (d === yesterday) grouped.Yesterday.push(t);
-    else grouped.Earlier.push(t);
-  });
+  const { tree, chrono } = buildTree(threads, customFolderNames);
+
+  const onDropOnFolder = async (e: React.DragEvent, targetFolderPath: string | null) => {
+    e.preventDefault();
+    const threadId = e.dataTransfer.getData("threadId");
+    const sourceFolderPath = e.dataTransfer.getData("sourceFolderPath");
+
+    try {
+      if (threadId) {
+        // Moving a thread
+        await api.patch(`/chat/threads/${threadId}`, { folder_name: targetFolderPath || "" });
+      } else if (sourceFolderPath) {
+        // Moving a folder
+        if (targetFolderPath === sourceFolderPath || targetFolderPath?.startsWith(sourceFolderPath + "/")) {
+          return; // Prevent circular drop
+        }
+        await api.patch("/chat/threads/folders/move", { source_folder: sourceFolderPath, target_folder: targetFolderPath || "" });
+      }
+      fetchThreads();
+    } catch (err) {
+      console.error("Drop failed", err);
+    }
+  };
+
+  const handleCreateFolder = () => {
+    if (!newFolderName.trim()) {
+      setIsCreatingFolder(false);
+      return;
+    }
+    const path = newFolderName.replace(/\//g, "-"); // Basic sanitation
+    if (!customFolderNames.includes(path)) {
+      setCustomFolderNames(prev => [...prev, path]);
+    }
+    setIsCreatingFolder(false);
+    setNewFolderName("");
+  };
+
+  // RECURSIVE FOLDER COMPONENT
+  const FolderNode = ({ node, depth }: { node: TreeNode, depth: number }) => {
+    const isCollapsed = collapsedFolders.has(node.fullPath);
+    const hasContent = Object.keys(node.children).length > 0 || node.threads.length > 0;
+
+    return (
+      <div 
+        onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); (e.currentTarget as HTMLElement).style.background = 'rgba(139,92,246,0.05)'; }}
+        onDragLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+        onDrop={(e) => { e.stopPropagation(); (e.currentTarget as HTMLElement).style.background = 'transparent'; onDropOnFolder(e, node.fullPath); }}
+        style={{ borderRadius: 8, transition: "background 0.2s", marginBottom: 2 }}
+      >
+        <div 
+          draggable
+          onDragStart={(e) => { e.dataTransfer.setData("sourceFolderPath", node.fullPath); }}
+          onClick={() => toggleFolder(node.fullPath)}
+          className="folder-header"
+          style={{ 
+            display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", cursor: "pointer", borderRadius: 8,
+            marginLeft: depth * 12 
+          }}
+        >
+          <span style={{ color: "var(--text-muted)", display: "flex", alignItems: "center" }}>
+            {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+          </span>
+          {editingFolder === node.fullPath ? (
+            <input 
+              autoFocus
+              className="chat-input"
+              value={folderEditValue}
+              onChange={(e) => setFolderEditValue(e.target.value)}
+              onBlur={() => handleRenameFolder(node.fullPath)}
+              onKeyDown={(e) => e.key === "Enter" && handleRenameFolder(node.fullPath)}
+              onClick={(e) => e.stopPropagation()}
+              style={{ flex: 1, padding: "2px 6px", fontSize: 13, background: "rgba(0,0,0,0.2)", borderRadius: 4, border: "1px solid var(--accent)", outline: "none", color: "#fff" }}
+            />
+          ) : (
+            <>
+              <span style={{ fontSize: 14, display: "flex", alignItems: "center", color: isCollapsed ? "var(--text-muted)" : "var(--accent)" }}>
+                {isCollapsed ? <Folder size={14} /> : <FolderOpen size={14} />}
+              </span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: isCollapsed ? "var(--text-muted)" : "var(--text-secondary)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {node.name}
+              </span>
+              <button 
+                onClick={(e) => { e.stopPropagation(); setEditingFolder(node.fullPath); setFolderEditValue(node.name); }}
+                className="folder-edit-btn"
+                style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, padding: 4, opacity: 0, color: "var(--text-muted)" }}
+              >
+                <Pencil size={12} />
+              </button>
+            </>
+          )}
+        </div>
+
+        {!isCollapsed && (
+          <div style={{ marginLeft: depth * 12 }}>
+            {/* Render subfolders */}
+            {Object.values(node.children).map(child => (
+              <FolderNode key={child.fullPath} node={child} depth={depth + 1} />
+            ))}
+            {/* Render threads */}
+            <div style={{ paddingLeft: 18, borderLeft: "1px solid rgba(255,255,255,0.05)", marginLeft: 14 }}>
+              {node.threads.map((t) => (
+                <ThreadItem key={t.id} t={t} pathname={pathname} setShowProfile={setShowProfile} refreshThreads={fetchThreads} />
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const handleRenameFolder = async (oldName: string) => {
+    const newName = folderEditValue.trim();
+    if (!newName || newName === oldName) {
+      setEditingFolder(null);
+      return;
+    }
+
+    try {
+      await api.patch("/chat/threads/folders/rename", { old_name: oldName, new_name: newName });
+      
+      // Update local state for folder list
+      setCustomFolderNames(prev => prev.map(n => n === oldName ? newName : n));
+      
+      // Update collapse state if needed
+      if (collapsedFolders.has(oldName)) {
+        setCollapsedFolders(prev => {
+          const next = new Set(prev);
+          next.delete(oldName);
+          next.add(newName);
+          return next;
+        });
+      }
+
+      setEditingFolder(null);
+      fetchThreads(); // Refresh to get threads with new folder tags
+    } catch (err) {
+      console.error("Folder rename failed", err);
+      setEditingFolder(null);
+    }
+  };
 
   return (
     <div className="sidebar" style={{ width: collapsed ? 64 : 260 }}>
@@ -207,16 +413,51 @@ export default function Sidebar({ collapsed, setCollapsed }: { collapsed: boolea
       {/* Thread History */}
       {!collapsed && (
         <div style={{ flex: 1, overflowY: "auto", padding: "0 8px 8px" }}>
-          {Object.entries(grouped).map(([label, items]) =>
-            items.length > 0 ? (
-              <div key={label}>
-                <p style={{ fontSize: 10.5, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", padding: "12px 8px 4px" }}>{label}</p>
-                {items.map((t) => (
-                  <ThreadItem key={t.id} t={t} pathname={pathname} setShowProfile={setShowProfile} refreshThreads={fetchThreads} />
-                ))}
-              </div>
-            ) : null
+          
+          <div style={{ padding: "12px 8px 8px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+             <p style={{ fontSize: 10.5, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em" }}>Folders</p>
+             <button 
+              onClick={() => setIsCreatingFolder(true)}
+              style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: "var(--accent)" }}
+             >+ New</button>
+          </div>
+
+          {isCreatingFolder && (
+            <div style={{ padding: "0 8px 8px" }}>
+              <input 
+                autoFocus
+                className="chat-input"
+                placeholder="Folder name..."
+                value={newFolderName}
+                onChange={(e) => setNewFolderName(e.target.value)}
+                onBlur={handleCreateFolder}
+                onKeyDown={(e) => e.key === "Enter" && handleCreateFolder()}
+                style={{ width: "100%", padding: "6px 10px", fontSize: 13, background: "rgba(0,0,0,0.1)", borderRadius: 6 }}
+              />
+            </div>
           )}
+
+          {/* Custom Folder Tree */}
+          {Object.values(tree).map(node => (
+            <FolderNode key={node.fullPath} node={node} depth={0} />
+          ))}
+
+          {/* Chronological (Root Drop Zone) */}
+          <div 
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => onDropOnFolder(e, null)}
+          >
+            {Object.entries(chrono).map(([label, items]) =>
+              items.length > 0 ? (
+                <div key={label}>
+                  <p style={{ fontSize: 10.5, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", padding: "12px 8px 4px" }}>{label}</p>
+                  {items.map((t) => (
+                    <ThreadItem key={t.id} t={t} pathname={pathname} setShowProfile={setShowProfile} refreshThreads={fetchThreads} />
+                  ))}
+                </div>
+              ) : null
+            )}
+          </div>
         </div>
       )}
     </div>

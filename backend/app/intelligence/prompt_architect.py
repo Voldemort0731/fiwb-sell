@@ -23,7 +23,8 @@ class PromptArchitect:
         attachment_text: str = None,
         query_type: str = "academic_question",
         material_id: str = None,
-        image_base64: str = None
+        image_base64: str = None,
+        citation_map: Dict = None,
     ) -> List[Dict]:
         """
         Builds a high-fidelity, multi-message conversation for the Socratic Institutional Mentor.
@@ -55,6 +56,9 @@ class PromptArchitect:
             unique_name = f"{base_title} [{course_name}]" if course_name else base_title
             doc_key = source_id or meta.get('file_name') or unique_name
             
+            # Read passage_id stamped by chat.py (no fragile text matching needed)
+            passage_id = meta.get('passage_id')
+            
             if doc_key not in docs:
                 docs[doc_key] = {
                     "title": unique_name,
@@ -63,7 +67,10 @@ class PromptArchitect:
                     "link": meta.get('source_link') or meta.get('url'),
                     "chunks": []
                 }
-            docs[doc_key]["chunks"].append(c.get('content', ''))
+            chunk_text = c.get('content', '')
+            if passage_id:
+                chunk_text = f"[PASSAGE_ID:{passage_id}]\n{chunk_text}"
+            docs[doc_key]["chunks"].append(chunk_text)
         
         for d_info in docs.values():
             content = "\n\n".join(d_info["chunks"])
@@ -136,10 +143,11 @@ You are an elite academic mentor and Socratic tutor.
 - Behavioral Memories: {memory_vault}
 
 # OPERATIONAL DIRECTIVES:
-6. **Citation**: Cite accurately as [From: Document Title].
+6. **Citation Protocol**: You MUST provide citations **inline**, right after the relevant sentence or claim. Use the format `[[cite:PASSAGE_ID]]`. PASSAGE_ID must be the exact tag (e.g., [[cite:123:0]]) found at the start of the relevant chunk. Do NOT cluster citations at the end; place them exactly where the context is used.
 7. **Socratic Bridge**: Guide the student. Do not just provide the answer; explain the path to it and probe with a clarifying "Bridge Question" at the end to ensure comprehension.
-8. **TAGGING (START)**: You MUST start your response with: `### 🧠 Intelligence Reasoning` followed by your inner logic.
-9. **TAGGING (END)**: You MUST conclude your response with a horizontal rule `---` followed by `### 📚 Sources` listing every document used with its clickable link (e.g., `1. [Document Name](LINK_URL_HERE) - Course Name`). If a link was provided in the context, YOU MUST include it.
+8. **UI Remote Control**: If the user explicitly asks you to open a document, show it side-by-side, or load it, you MUST emit `<<OPEN:PASSAGE_ID>>` using the relevant document's PASSAGE_ID anywhere in your response (e.g. `<<OPEN:147:0>>`). The frontend will intercept this and physically open the viewer immediately.
+9. **TAGGING (START)**: You MUST start your response with: `### 🧠 Intelligence Reasoning` followed by your inner logic.
+9. **Final Response**: You are FORBIDDEN from creating a list of sources at the end of your response. All citations MUST be strictly inline.
 
 # VISUAL EXCELLENCE:
 - Use # H1 and ## H2 for hierarchy.
@@ -148,7 +156,13 @@ You are an elite academic mentor and Socratic tutor.
 - **Tables**: Use Markdown tables for comparing concepts or representing structured data.
 - **Code**: Always specify the language tag (e.g., ```cpp) for syntax highlighting.
 - For complex solutions, use a "Solution Architecture" block (a bulleted list of steps).
-- Ensure a clear separation between your reasoning, the main answer, and the source list.
+- Ensure a clear separation between your reasoning and the main answer.
+
+<STRICT_NO_SOURCE_LIST_POLICY>
+UNDER NO CIRCUMSTANCES are you allowed to compile a "Sources:" or "References:" list at the end of your message. 
+ALL citations MUST be INLINE directly next to the sentence they correspond to (e.g., "...this is a fact [[cite:123:0]]."). 
+Violating this policy breaks the frontend UI.
+</STRICT_NO_SOURCE_LIST_POLICY>
 """
 
         # 🚀 FORCE VISION ANALYSIS IF IMAGE PRESENT

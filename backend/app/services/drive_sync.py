@@ -139,9 +139,9 @@ class DriveSyncService:
                         lambda: service.files().get(fileId=fid, fields="id, name, mimeType, webViewLink, createdTime").execute()
                     )
                 
-                # 3. Extract content
-                content = await self._extract_content(service, meta)
-                if not content:
+                # 3. Extract content (returns text and raw binary)
+                content, raw_bytes = await self._extract_content(service, meta)
+                if not content and not raw_bytes:
                     logger.warning(f"[Drive] Could not extract content for {meta.get('name')} ({fid})")
                     stats["failed"] += 1
                     continue
@@ -154,7 +154,9 @@ class DriveSyncService:
                     
                     if existing:
                         existing.full_text = content
-                        existing.content_preview = content[:500]
+                        existing.content_preview = content[:500] if content else existing.content_preview
+                        existing.file_content = raw_bytes
+                        existing.mime_type = meta.get('mimeType')
                         # Update parent if it was provided (might have moved or been picked directly now)
                         existing.parent_external_id = parent_fid or existing.parent_external_id
                         existing.indexed_in_supermemory = True
@@ -166,8 +168,10 @@ class DriveSyncService:
                             user_id=self.user.id,
                             course_id=course_id,
                             title=meta.get('name', 'Untitled'),
-                            content_preview=content[:500],
+                            content_preview=content[:500] if content else "Encrypted/Binary Document",
                             full_text=content,
+                            file_content=raw_bytes,
+                            mime_type=meta.get('mimeType'),
                             material_type="file",
                             source="drive",
                             external_id=fid,
@@ -186,25 +190,37 @@ class DriveSyncService:
                     new_mat.source_link = f"{os.getenv('BACKEND_URL', 'http://localhost:8002')}/profile/proxy/drive/{local_id}"
                     await db.commit()
 
-                # 4. Push to Supermemory
+                # 4. Push to Supermemory — per-page chunks
                 doc_title = meta.get('name', 'Untitled Document')
-                sm_resp = await self.sm_client.add_document(
-                    content=content,
-                    metadata={
-                        "source": "google_drive",
-                        "type": "academic_material",
-                        "file_id": fid,
-                        "mime_type": meta.get('mimeType'),
-                        "user_id": self.user.email,
-                        "course": "Personal Google Drive",
-                        "source_link": f"{os.getenv('BACKEND_URL', 'http://localhost:8002')}/profile/proxy/drive/{local_id}"
-                    },
-                    user_email=self.user.email,
-                    title=doc_title,
-                    container_tag=f"user_{self.user.id}"
-                )
-                
-                if sm_resp:
+                # Split on form-feed page boundaries
+                raw_pages = content.split("\x0c") if "\x0c" in content else [content]
+                pages = [p.strip() for p in raw_pages if p.strip()]
+                total_pages = len(pages)
+                any_ok = False
+                for pg_idx, pg_text in enumerate(pages):
+                    page_num = pg_idx + 1
+                    pg_title = f"{doc_title} (p.{page_num})" if total_pages > 1 else doc_title
+                    sm_resp = await self.sm_client.add_document(
+                        content=pg_text,
+                        metadata={
+                            "source": "google_drive",
+                            "type": "academic_material",
+                            "file_id": fid,
+                            "mime_type": meta.get('mimeType'),
+                            "user_id": self.user.email,
+                            "course": "Personal Google Drive",
+                            "material_id": str(local_id),
+                            "source_link": f"{os.getenv('BACKEND_URL', 'http://localhost:8002')}/profile/proxy/drive/{local_id}",
+                            "page_number": page_num,
+                            "total_pages": total_pages,
+                        },
+                        user_email=self.user.email,
+                        title=pg_title,
+                    )
+                    if sm_resp:
+                        any_ok = True
+
+                if any_ok:
                     stats["success"] += 1
                     logger.info(f"[Drive] Successfully synced to Supermemory: {meta.get('name')}")
                 else:
@@ -249,8 +265,8 @@ class DriveSyncService:
             
         return file_map
 
-    async def _extract_content(self, service, meta: Dict) -> Optional[str]:
-        """Extract text from various Drive file types."""
+    async def _extract_content(self, service, meta: Dict) -> tuple[Optional[str], Optional[bytes]]:
+        """Extract text and capture raw binary from various Drive file types."""
         fid = meta['id']
         mime = meta['mimeType']
         
@@ -275,32 +291,32 @@ class DriveSyncService:
             
             if not raw_bytes:
                 print("DEBUG: raw_bytes is empty")
-                return ""
+                return "", None
 
             if mime == 'application/pdf':
                 parsed = await self._parse_pdf(raw_bytes)
                 print(f"DEBUG: Parsed {len(parsed)} characters from PDF")
-                return parsed
+                return parsed, raw_bytes
             
             # Default to UTF-8 decoding for text/html/etc
             decoded = raw_bytes.decode('utf-8', errors='ignore')
             print(f"DEBUG: Decoded {len(decoded)} characters as UTF-8")
-            return decoded
+            return decoded, raw_bytes
 
         except Exception as e:
             logger.error(f"[Drive] Extraction error for {fid}: {e}")
             return None
 
     async def _parse_pdf(self, raw_bytes: bytes) -> str:
-        """Parse PDF bytes using pypdf."""
+        """Parse PDF bytes using pypdf. Returns text with \x0c (form-feed) page separators."""
         try:
             reader = pypdf.PdfReader(io.BytesIO(raw_bytes))
-            text_parts = []
-            for i, page in enumerate(reader.pages):
-                text = page.extract_text()
-                if text:
-                    text_parts.append(f"--- [Page {i+1}] ---\n{text}")
-            return "\n\n".join(text_parts)
+            pages = []
+            for page in reader.pages:
+                text = page.extract_text() or ""
+                pages.append(text)
+            # Join with form-feed so reindex_all.py can split on it
+            return "\x0c".join(pages)
         except Exception as e:
             logger.error(f"[Drive] PDF parsing error: {e}")
             return ""
