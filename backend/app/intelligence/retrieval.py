@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from app.models.database import AsyncSessionLocal, User
 from app.intelligence.sm_client import get_sm_client
+from app.services.openai_service import contextualize_query
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -80,21 +81,8 @@ class RetrievalOrchestrator:
         ctag = f"user_{user_id}" if user_id else None
 
         # 🚀 Step 2: Contextualize query
-        search_query = query
-        if history:
-            try:
-                resp = await self.openai.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "Rewrite the user's latest query into a standalone search query for a vector database based on the conversation history. Keep it concise. Focus on keywords."},
-                        {"role": "user", "content": f"History: {history[-3:]}\n\nQuery: {query}"}
-                    ],
-                    max_tokens=60
-                )
-                search_query = resp.choices[0].message.content.strip('\"\' .?!') or query
-                logger.info(f"[Retrieval] Rewritten query: {search_query}")
-            except Exception as e:
-                logger.warning(f"[Retrieval] LLM rewrite failed: {e}")
+        search_query = await contextualize_query(query, history)
+        logger.info(f"[Retrieval] Rewritten query: {search_query}")
 
         uid = self.user_email
         FETCH_LIMIT = 60

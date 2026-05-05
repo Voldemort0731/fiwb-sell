@@ -33,6 +33,7 @@ import { clsx } from "clsx";
 // ── Constants ──────────────────────────────────────────────────────────────
 const LEVEL_GAP = 280;
 const NODE_GAP = 220;
+type ConceptNodeData = MMNode & Record<string, unknown>;
 
 const COLORS: Record<number, string> = {
   0: "#a855f7", // Root - Purple
@@ -50,7 +51,7 @@ function computeLayout(mmNodes: MMNode[], mmEdges: MMEdge[]) {
     nodesByLevel[lvl].push(n);
   });
 
-  const layoutNodes: Node[] = [];
+  const layoutNodes: Node<ConceptNodeData>[] = [];
   const levels = Object.keys(nodesByLevel).map(Number).sort((a, b) => a - b);
 
   levels.forEach((lvl) => {
@@ -61,7 +62,7 @@ function computeLayout(mmNodes: MMNode[], mmEdges: MMEdge[]) {
       layoutNodes.push({
         id: node.id,
         type: "concept",
-        data: node,
+        data: { ...node } as ConceptNodeData,
         position: {
           x: idx * NODE_GAP - totalWidth / 2,
           y: lvl * LEVEL_GAP,
@@ -97,7 +98,7 @@ function ConceptNode({ data }: { data: MMNode }) {
     <motion.div
       initial={{ scale: 0.8, opacity: 0 }}
       animate={{ scale: 1, opacity: 1 }}
-      className="relative px-4 py-3 rounded-xl border bg-black/80 backdrop-blur-md shadow-2xl min-w-[180px] group transition-all"
+      className="relative px-4 py-3 rounded-xl border bg-white/80 backdrop-blur-md shadow-2xl min-w-[180px] group transition-all"
       style={{ borderColor: color }}
     >
       <Handle type="target" position={Position.Top} className="!bg-gray-600 !w-2 !h-2" />
@@ -112,16 +113,16 @@ function ConceptNode({ data }: { data: MMNode }) {
           </span>
           {data.citations?.length > 0 && (
             <div className="flex gap-0.5">
-              <BookOpen size={10} className="text-gray-500" />
+              <BookOpen size={10} className="text-gray-400" />
             </div>
           )}
         </div>
         
-        <div className="text-sm font-semibold text-white group-hover:text-purple-400 transition-colors">
+        <div className="text-sm font-semibold text-black group-hover:text-purple-600 transition-colors">
           {data.label}
         </div>
         
-        <div className="text-[11px] text-gray-400 line-clamp-2 leading-relaxed mt-1">
+        <div className="text-[11px] text-gray-500 line-clamp-2 leading-relaxed mt-1">
           {data.definition}
         </div>
       </div>
@@ -142,8 +143,8 @@ export default function MindMapPanel({ onChatInject }: { onChatInject: (text: st
     closeMap, setData, setLoading 
   } = useMindMapStore();
   
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node<ConceptNodeData>>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [selectedNode, setSelectedNode] = useState<MMNode | null>(null);
   const [instruction, setInstruction] = useState("");
 
@@ -165,11 +166,16 @@ export default function MindMapPanel({ onChatInject }: { onChatInject: (text: st
       .catch(() => setLoading(false));
   }, [isOpen, docId]);
 
-  const onNodeClick = useCallback((_event: any, node: Node) => {
-    setSelectedNode(node.data as MMNode);
+  const onNodeClick = useCallback((_event: React.MouseEvent, node: Node<ConceptNodeData>) => {
+    setSelectedNode(node.data);
   }, []);
 
   const handleCitationClick = (materialId: string, page: number, snippet: string) => {
+    console.log(`[MindMap] Opening citation for material ${materialId} on page ${page}`);
+    
+    // Auto-close mind map to make room for viewer
+    closeMap();
+
     useViewerStore.getState().openViewer({
       docId: materialId,
       passageId: `mm-${Date.now()}`,
@@ -221,14 +227,14 @@ export default function MindMapPanel({ onChatInject }: { onChatInject: (text: st
   if (!isOpen) return null;
 
   return (
-    <div className="flex flex-col h-full bg-[#020202] relative group/map overflow-hidden">
+    <div className="flex flex-col h-full bg-[var(--bg-primary)] relative group/map overflow-hidden">
       {/* ── Floating Premium Toolbar ── */}
-      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-1.5 p-1.5 rounded-2xl bg-black/40 backdrop-blur-xl border border-white/10 shadow-2xl transition-all hover:bg-black/60 group/toolbar">
+      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-1.5 p-1.5 rounded-2xl bg-white/40 backdrop-blur-xl border border-black/10 shadow-2xl transition-all hover:bg-white/60 group/toolbar">
         <div className="flex items-center gap-3 px-3">
           <div className={clsx("w-2 h-2 rounded-full", loading ? "bg-purple-500 animate-pulse shadow-[0_0_8px_purple]" : "bg-white/20")} />
           <div className="flex flex-col">
             <span className="text-[9px] font-black text-purple-400/80 uppercase tracking-[0.2em] leading-tight">Atlas Engine</span>
-            <span className="text-[11px] font-bold text-white/90 truncate max-w-[120px] leading-tight">
+            <span className="text-[11px] font-bold text-black/90 truncate max-w-[120px] leading-tight">
               {docTitle || "Synthetic Graph"}
             </span>
           </div>
@@ -238,18 +244,18 @@ export default function MindMapPanel({ onChatInject }: { onChatInject: (text: st
 
         <div className="flex items-center gap-1">
           {canUndo && (
-            <button onClick={handleUndo} className="p-1.5 hover:bg-white/10 rounded-xl transition-all text-white/40 hover:text-white" title="Undo Edit">
+            <button onClick={handleUndo} className="p-1.5 hover:bg-black/10 rounded-xl transition-all text-black/40 hover:text-black" title="Undo Edit">
               <Undo2 size={15} />
             </button>
           )}
-          <button onClick={handleRegenerate} className="p-1.5 hover:bg-white/10 rounded-xl transition-all text-white/40 hover:text-white" title="Force Regenerate">
+          <button onClick={handleRegenerate} className="p-1.5 hover:bg-black/10 rounded-xl transition-all text-black/40 hover:text-black" title="Force Regenerate">
             <RefreshCw size={15} className={loading ? "animate-spin" : ""} />
           </button>
         </div>
 
         <div className="w-[1px] h-4 bg-white/10 mx-1" />
 
-        <button onClick={closeMap} className="p-1.5 hover:bg-red-500/20 hover:text-red-400 rounded-xl transition-all text-white/40">
+        <button onClick={closeMap} className="p-1.5 hover:bg-red-500/20 hover:text-red-400 rounded-xl transition-all text-black/40">
           <X size={16} />
         </button>
       </div>
@@ -258,7 +264,7 @@ export default function MindMapPanel({ onChatInject }: { onChatInject: (text: st
       {loading && !data && (
         <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-black/60 backdrop-blur-md">
           <Loader2 size={40} className="text-purple-500 animate-spin mb-6" />
-          <div className="text-sm font-bold text-white tracking-[0.3em] uppercase animate-pulse">Synthesizing Architecture</div>
+          <div className="text-sm font-bold text-black tracking-[0.3em] uppercase animate-pulse">Synthesizing Architecture</div>
         </div>
       )}
 
@@ -273,15 +279,15 @@ export default function MindMapPanel({ onChatInject }: { onChatInject: (text: st
           onNodeClick={onNodeClick}
           nodeTypes={nodeTypes}
           fitView
-          className="bg-[#050505]"
+          className="bg-[var(--bg-primary)]"
           minZoom={0.1}
           maxZoom={4}
         >
-          <Background color="#111" gap={24} size={1} />
+          <Background color="#ccc" gap={24} size={1} />
           <Controls className="!bg-black/80 !border-white/5 !fill-white !rounded-xl !overflow-hidden border shadow-2xl" />
           
           <Panel position="bottom-right" className="mb-20 mr-4">
-            <div className="text-[9px] font-bold text-white/20 uppercase tracking-[0.2em] bg-black/40 backdrop-blur px-3 py-1.5 rounded-lg border border-white/5">
+            <div className="text-[9px] font-bold text-black/40 uppercase tracking-[0.2em] bg-white/40 backdrop-blur px-3 py-1.5 rounded-lg border border-black/5">
                Precision: 0.982 · Vectors: {nodes.length}
             </div>
           </Panel>
@@ -291,7 +297,7 @@ export default function MindMapPanel({ onChatInject }: { onChatInject: (text: st
         <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-40 w-[90%] max-w-md">
           <form 
             onSubmit={handleEdit}
-            className="group/form relative bg-black/60 backdrop-blur-3xl border border-white/10 p-1.5 rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.8)] focus-within:border-purple-500/50 transition-all duration-500"
+            className="group/form relative bg-white/60 backdrop-blur-3xl border border-black/10 p-1.5 rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.1)] focus-within:border-purple-500/50 transition-all duration-500"
           >
             <div className="absolute -inset-0.5 bg-gradient-to-r from-purple-600 to-blue-600 rounded-2xl blur opacity-0 group-focus-within/form:opacity-20 transition duration-500" />
             <div className="relative flex items-center gap-2">
@@ -300,13 +306,13 @@ export default function MindMapPanel({ onChatInject }: { onChatInject: (text: st
                 value={instruction}
                 onChange={(e) => setInstruction(e.target.value)}
                 placeholder="Modify map structure (e.g. 'Add detail to X')..."
-                className="flex-1 bg-transparent border-none focus:ring-0 text-xs text-white placeholder-white/25 px-3 py-2"
+                className="flex-1 bg-transparent border-none focus:ring-0 text-xs text-black placeholder-black/25 px-3 py-2"
                 disabled={loading}
               />
               <button 
                 type="submit"
                 disabled={!instruction.trim() || loading}
-                className="p-2 bg-white/5 hover:bg-white/10 rounded-xl text-white/40 hover:text-white disabled:opacity-30 transition-all"
+                className="p-2 bg-black/5 hover:bg-black/10 rounded-xl text-black/40 hover:text-black disabled:opacity-30 transition-all"
               >
                 {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
               </button>
@@ -323,7 +329,7 @@ export default function MindMapPanel({ onChatInject }: { onChatInject: (text: st
             initial={{ x: 400 }}
             animate={{ x: 0 }}
             exit={{ x: 400 }}
-            className="absolute top-0 right-0 h-full w-80 bg-black/95 border-l border-white/10 shadow-[-20px_0_40px_rgba(0,0,0,0.5)] z-30 p-6 overflow-y-auto"
+            className="absolute top-0 right-0 h-full w-80 bg-white/95 border-l border-black/10 shadow-[-20px_0_40px_rgba(0,0,0,0.05)] z-30 p-6 overflow-y-auto"
           >
             <button 
               onClick={() => setSelectedNode(null)}
@@ -339,7 +345,7 @@ export default function MindMapPanel({ onChatInject }: { onChatInject: (text: st
               >
                 Concept Level {selectedNode.level}
               </span>
-              <h2 className="text-2xl font-bold text-white mb-4 leading-tight">{selectedNode.label}</h2>
+              <h2 className="text-2xl font-bold text-black mb-4 leading-tight">{selectedNode.label}</h2>
               <p className="text-sm text-gray-400 leading-relaxed mb-8">{selectedNode.definition}</p>
 
               <div className="space-y-6">
@@ -351,7 +357,7 @@ export default function MindMapPanel({ onChatInject }: { onChatInject: (text: st
                     <div 
                       key={idx}
                       onClick={() => handleCitationClick(cit.material_id, cit.page, cit.snippet)}
-                      className="group cursor-pointer p-4 rounded-xl bg-white/5 border border-white/5 hover:border-purple-500/30 hover:bg-purple-500/5 transition-all mb-3"
+                      className="group cursor-pointer p-4 rounded-xl bg-black/5 border border-black/5 hover:border-purple-500/30 hover:bg-purple-500/5 transition-all mb-3"
                     >
                       <p className="text-xs text-gray-300 italic mb-3 leading-relaxed">
                         &quot;{cit.snippet}&quot;

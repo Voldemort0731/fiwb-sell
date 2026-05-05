@@ -12,21 +12,30 @@
       width: 100%;
       height: 100%;
       overflow-y: auto;
-      padding: 16px;
+      overflow-x: hidden;
+      padding: 24px 16px;
       display: flex;
       flex-direction: column;
-      gap: 16px;
+      align-items: center; /* Center the pages horizontally */
+      gap: 24px;
       scroll-behavior: smooth;
     }
 
     .page-wrapper {
-      position: relative;
+      position: absolute;
+      top: 0;
+      left: 0;
       background: #1e1e1e;
       border-radius: 4px;
-      box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
       overflow: hidden;
+      transform-origin: top left;
+    }
+
+    .page-box {
+      position: relative;
       flex-shrink: 0;
-      margin: 0 auto;
+      /* width and height set dynamically by JS */
     }
 
     .page-sentinel {
@@ -147,6 +156,7 @@
     let pageIntersectionObserver = null;
     let pageVisibleTimeout = null;
     let currentPage = null;
+    let currentZoomLevel = 1.0; // 1.0 = fit-to-width
 
     // ── Utility: get file URL from query string ──────────────────────────
     function getFileUrl() {
@@ -231,19 +241,17 @@
       return currentHighlightNodes.length > 0;
     }
 
-    // ── Scroll to a page with offset ─────────────────────────────────────
+    // ── Scroll to a page with offset ─────────────────────────────────────────────
     function scrollToPage(pageNum) {
-      const sentinel = document.querySelector(`[data-page="${pageNum}"]`);
-      if (sentinel) {
-        // Use 'auto' (instant) for the initial page jump to avoid jitter during doc loading/resizing
-        sentinel.parentElement.scrollIntoView({ behavior: 'auto', block: 'start' });
-        // Precise vertical offset to account for the floating toolbar
+      const pageBox = document.querySelector(`.page-box[data-page="${pageNum}"]`);
+      if (pageBox) {
+        pageBox.scrollIntoView({ behavior: 'auto', block: 'start' });
         container.scrollTop -= 70;
       }
     }
 
 
-    // ── Page IntersectionObserver ─────────────────────────────────────────
+    // ── Page IntersectionObserver ──────────────────────────────────────────────────
     function initPageObserver() {
       if (pageIntersectionObserver) pageIntersectionObserver.disconnect();
 
@@ -262,41 +270,52 @@
         }
       }, { root: container, rootMargin: "-49% 0px -49% 0px", threshold: 0 });
 
-      container.querySelectorAll('.page-wrapper').forEach(el => {
+      // Observe page-boxes (they hold layout space, unlike absolute page-wrappers)
+      container.querySelectorAll('.page-box').forEach(el => {
         pageIntersectionObserver.observe(el);
       });
     }
 
     // ── Resizing Logic ───────────────────────────────────────────────────
-    function updateLayoutToFitWidth() {
+    function getFitToWidthScale() {
       const containerWidth = container.clientWidth;
-      const targetWidth = Math.max(containerWidth - 32, 200);
+      const firstWrapper = document.querySelector('.page-wrapper');
+      if (!firstWrapper) return 1;
+      const originalWidth = parseFloat(firstWrapper.dataset.originalWidth);
+      if (!originalWidth) return 1;
+      return Math.max((containerWidth - 32) / originalWidth, 0.1);
+    }
 
-      document.querySelectorAll('.page-wrapper').forEach(wrapper => {
+    function applyZoom(scale) {
+      currentZoomLevel = scale;
+      document.querySelectorAll('.page-box').forEach(pageBox => {
+        const wrapper = pageBox.querySelector('.page-wrapper');
+        if (!wrapper) return;
         const originalWidth = parseFloat(wrapper.dataset.originalWidth);
         const originalHeight = parseFloat(wrapper.dataset.originalHeight);
-        const pageBox = wrapper.parentElement;
+        if (!originalWidth) return;
 
-        if (originalWidth && pageBox) {
-          const scaleRatio = targetWidth / originalWidth;
-          
-          // Actual scaled dimensions
-          const scaledWidth = originalWidth * scaleRatio;
-          const scaledHeight = originalHeight * scaleRatio;
+        const scaledWidth = originalWidth * scale;
+        const scaledHeight = originalHeight * scale;
 
-          // Resize the wrapper's layout footprint
-          wrapper.style.transform = `scale(${scaleRatio})`;
-          wrapper.style.transformOrigin = '0 0';
-          
-          // Update the parent box to match the NEW scaled size precisely
-          pageBox.style.width = scaledWidth + 'px';
-          pageBox.style.height = scaledHeight + 'px';
-        }
+        // Page-box holds the exact layout space (scaled dimensions)
+        pageBox.style.width = scaledWidth + 'px';
+        pageBox.style.height = scaledHeight + 'px';
+
+        // Wrapper is absolutely positioned, scales from top-left
+        wrapper.style.transform = `scale(${scale})`;
+        wrapper.style.transformOrigin = 'top left';
       });
     }
 
+    function updateLayoutToFitWidth() {
+      const scale = getFitToWidthScale();
+      applyZoom(scale);
+    }
+
     const resizeObserver = new ResizeObserver(() => {
-      updateLayoutToFitWidth();
+      // Use requestAnimationFrame to ensure we resize after the browser has finished layout
+      requestAnimationFrame(() => updateLayoutToFitWidth());
     });
     resizeObserver.observe(container);
 
@@ -326,17 +345,20 @@
 
         const pageBox = document.createElement('div');
         pageBox.className = 'page-box';
-        pageBox.style.width = '100%';
-        pageBox.style.display = 'flex';
-        pageBox.style.justifyContent = 'center';
+        // Initial size set to unscaled; will be corrected by applyZoom after render
+        pageBox.style.width = viewport.width + 'px';
+        pageBox.style.height = viewport.height + 'px';
+
+        // Page-box gets the data-page attribute for scroll + IntersectionObserver targeting
+        pageBox.dataset.page = pageNum;
 
         const wrapper = document.createElement('div');
         wrapper.className = 'page-wrapper';
-        wrapper.dataset.page = pageNum;
         wrapper.dataset.originalWidth = viewport.width;
         wrapper.dataset.originalHeight = viewport.height;
         wrapper.style.width = viewport.width + 'px';
         wrapper.style.height = viewport.height + 'px';
+        wrapper.style.transformOrigin = 'top left';
 
         // Page sentinel for IntersectionObserver
         const sentinel = document.createElement('div');
@@ -391,8 +413,10 @@
       scrollToPage(pageNumber);
 
       setTimeout(() => {
-        const pageWrappers = container.querySelectorAll('.page-wrapper');
-        const targetWrapper = pageWrappers[pageNumber - 1];
+        // Find the page-box by its data-page attribute, then get its wrapper
+        const targetPageBox = container.querySelector(`.page-box[data-page="${pageNumber}"]`);
+        if (!targetPageBox) return;
+        const targetWrapper = targetPageBox.querySelector('.page-wrapper');
         if (!targetWrapper) return;
 
         const textLayer = targetWrapper.querySelector('.textLayer');
@@ -422,10 +446,17 @@
         case 'RESIZE_VIEWER':
           updateLayoutToFitWidth();
           break;
-        case 'SET_ZOOM':
-          if (zoomType === 'fit') updateLayoutToFitWidth();
-          // implement in/out if needed, for now fit is the priority
+        case 'SET_ZOOM': {
+          const fitScale = getFitToWidthScale();
+          if (zoomType === 'fit') {
+            applyZoom(fitScale);
+          } else if (zoomType === 'in') {
+            applyZoom(Math.min(currentZoomLevel * 1.2, fitScale * 3));
+          } else if (zoomType === 'out') {
+            applyZoom(Math.max(currentZoomLevel * 0.85, fitScale * 0.3));
+          }
           break;
+        }
       }
     });
 

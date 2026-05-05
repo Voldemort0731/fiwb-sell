@@ -23,7 +23,7 @@ else
 fi
 
 # Run backend in the background
-uvicorn app.main:app --host 127.0.0.1 --port 8002 &
+./venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8002 &
 BACKEND_PID=$!
 
 # Frontend

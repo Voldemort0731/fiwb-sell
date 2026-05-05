@@ -2,6 +2,7 @@
 mindmap_service.py
 Generation, caching, and editing of document mind maps using OpenAI.
 """
+from __future__ import annotations
 import json
 import hashlib
 import logging
@@ -87,7 +88,7 @@ async def get_mind_map(
     user_id: int,
     material_id: int,
     force_regenerate: bool = False,
-) -> dict | None:
+) -> Optional[dict]:
     """
     Fetch cached mind map if valid. Returns None if it needs to be generated.
     If force_regenerate, deletes any existing cache and returns None.

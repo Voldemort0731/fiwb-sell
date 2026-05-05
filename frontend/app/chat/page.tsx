@@ -1,9 +1,8 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/auth-store";
 import { api } from "@/lib/api";
-import Link from "next/link";
 import GoogleDrivePicker from "@/components/GoogleDrivePicker";
 
 export default function ChatHome() {
@@ -11,6 +10,8 @@ export default function ChatHome() {
   const router = useRouter();
   const [syncingDrive, setSyncingDrive] = useState(false);
   const [query, setQuery] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
 
   const handleNewChat = () => {
     const trimmed = query.trim();
@@ -19,6 +20,30 @@ export default function ChatHome() {
     } else {
       router.push("/chat/new");
     }
+  };
+
+  const handleManualUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploading(true);
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      await api.post("/integrations/upload", formData);
+      alert(`Successfully uploaded "${file.name}"! You can find it in your Digital Twin under "Uploads".`);
+    } catch (err) {
+      console.error("Manual upload failed:", err);
+      alert("Failed to upload document. Please try again.");
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const triggerFileUpload = () => {
+    fileInputRef.current?.click();
   };
 
   const handleDriveFilesSelected = async (fileIds: string[]) => {
@@ -36,6 +61,28 @@ export default function ChatHome() {
   };
 
   const [syncingClassroom, setSyncingClassroom] = useState(false);
+  const [heading, setHeading] = useState("How can I help you today?");
+  const [placeholder, setPlaceholder] = useState("Message FIWB...");
+
+  const HEADINGS = [
+    "What can I help you ace?",
+    "Where do we start today?",
+    "What shall we figure out?"
+  ];
+
+  const PLACEHOLDERS = [
+    "Let's Cook",
+    "Ask me anything about your courses...",
+    "Start with a topic, a doubt, or a file..."
+  ];
+
+  useEffect(() => {
+    const hIdx = Math.floor(Math.random() * HEADINGS.length);
+    const pIdx = Math.floor(Math.random() * PLACEHOLDERS.length);
+    setHeading(HEADINGS[hIdx]);
+    setPlaceholder(PLACEHOLDERS[pIdx]);
+  }, []);
+
   const handleRefreshClassroom = async () => {
     setSyncingClassroom(true);
     try {
@@ -50,49 +97,50 @@ export default function ChatHome() {
   };
 
   const firstName = user?.name?.split(" ")[0] || "there";
-  const hour = new Date().getHours();
-  const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
 
   const suggestions = [
-    { icon: "📖", label: "Explain a concept", prompt: "Can you explain recursion using a simple analogy?" },
-    { icon: "📝", label: "Summarize material", prompt: "Summarize my latest course materials for me" },
-    { icon: "🧪", label: "Quiz me", prompt: "Quiz me on recent topics from my courses" },
+    { icon: "✦", label: "Explain a concept", prompt: "Can you explain recursion using a simple analogy?" },
+    { icon: "⌁", label: "Summarize material", prompt: "Summarize my latest course materials for me" },
+    { icon: "?", label: "Quiz me", prompt: "Quiz me on recent topics from my courses" },
     { icon: "📅", label: "Check deadlines", prompt: "What assignments are due soon based on my Classroom sync?" },
   ];
 
   return (
-    <div style={{ height: "100%", overflowY: "auto", padding: "60px 48px", background: "var(--bg-primary)" }}>
+    <div style={{ height: "100%", overflowY: "auto", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "48px", background: "transparent" }}>
+      {/* Hidden file input */}
+      <input 
+        type="file" 
+        ref={fileInputRef} 
+        onChange={handleManualUpload} 
+        style={{ display: "none" }} 
+      />
+
       {/* AI Spotlight Section */}
-      <div className="fade-in" style={{ textAlign: "center", marginBottom: 60, marginTop: 40 }}>
-        <div style={{ display: "inline-flex", alignItems: "center", gap: 12, padding: "8px 16px", borderRadius: 12, background: "rgba(139,92,246,0.1)", marginBottom: 16 }}>
-           <span style={{ fontSize: 20 }}>⌘</span>
-           <h1 style={{ fontSize: 32, fontWeight: 800, letterSpacing: "-0.02em" }}>AI Spotlight Search</h1>
+      <div className="fade-in" style={{ textAlign: "center", width: "100%", maxWidth: 800 }}>
+        <div style={{ marginBottom: 14 }}>
+           <h1 className="claude-home-title" style={{ fontSize: 54, fontWeight: 500, letterSpacing: "0.04em", lineHeight: 1.2 }}>{heading}</h1>
         </div>
-        <p style={{ color: "var(--text-muted)", fontSize: 17, marginBottom: 40, opacity: 0.8 }}>Search Drive, Classroom, or ask AI</p>
+        <p style={{ color: "var(--text-secondary)", fontSize: 16, marginBottom: 34 }}>Search your Drive, Classroom, courses, or start a new chat, {firstName}.</p>
         
-        <div style={{ maxWidth: 760, margin: "0 auto", position: "relative" }}>
-          <div className="glass" style={{ display: "flex", alignItems: "center", padding: "8px 8px 8px 24px", borderRadius: 20, border: "1px solid var(--border)", boxShadow: "0 25px 50px rgba(0,0,0,0.12)" }}>
+        <div style={{ maxWidth: 780, margin: "0 auto", position: "relative" }}>
+          <div style={{ display: "flex", alignItems: "center", padding: "10px 10px 10px 22px", borderRadius: 24, border: "1px solid rgba(70,54,38,0.11)", background: "#fffdf7", boxShadow: "0 22px 60px rgba(72,54,35,0.11)" }}>
             <input 
               type="text" 
-              placeholder="Search Drive, Classroom..." 
+              placeholder={placeholder} 
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") handleNewChat();
               }}
-              style={{ flex: 1, background: "none", border: "none", color: "var(--text-primary)", outline: "none", fontSize: 18 }}
+              style={{ flex: 1, background: "none", border: "none", color: "var(--text-primary)", outline: "none", fontSize: 17 }}
             />
-            <button onClick={handleNewChat} className="btn-primary" style={{ padding: "14px 28px", borderRadius: 14, display: "flex", alignItems: "center", gap: 10, fontSize: 16 }}>
-              <span style={{ fontSize: 20 }}>✧</span> Ask AI
+            <button onClick={handleNewChat} className="btn-primary" style={{ padding: "12px 18px", borderRadius: 16, display: "flex", alignItems: "center", gap: 8, fontSize: 15 }}>
+              Start chat <span style={{ fontSize: 18 }}>↑</span>
             </button>
           </div>
         </div>
 
-        <div style={{ display: "flex", justifyContent: "center", gap: 16, marginTop: 48 }}>
-          <span style={{ color: "var(--text-muted)", fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.12em", alignSelf: "center", marginRight: 12, opacity: 0.6 }}>Quick Actions:</span>
-          <button onClick={handleNewChat} className="glass hover-lift" style={{ padding: "12px 24px", borderRadius: 14, border: "none", cursor: "pointer", color: "var(--text-primary)", fontSize: 15, display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ opacity: 0.8, fontSize: 18 }}>💬</span> Chatbot
-          </button>
+        <div style={{ display: "flex", justifyContent: "center", gap: 12, marginTop: 28, flexWrap: "wrap" }}>
           <GoogleDrivePicker
             onFilesSelected={handleDriveFilesSelected}
             triggerElement={(openPicker) => (
@@ -100,9 +148,8 @@ export default function ChatHome() {
                 onClick={openPicker} 
                 className="glass hover-lift" 
                 disabled={syncingDrive}
-                style={{ padding: "12px 24px", borderRadius: 14, border: "none", cursor: "pointer", color: "var(--text-primary)", fontSize: 15, display: "flex", alignItems: "center", gap: 10, opacity: syncingDrive ? 0.5 : 1 }}
+                style={{ padding: "10px 18px", borderRadius: 999, border: "1px solid var(--border)", cursor: "pointer", color: "var(--text-primary)", fontSize: 14, display: "flex", alignItems: "center", gap: 8, opacity: syncingDrive ? 0.5 : 1, boxShadow: "none" }}
               >
-                <span style={{ opacity: 0.8, fontSize: 18 }}>{syncingDrive ? "⏳" : "☁️"}</span> 
                 {syncingDrive ? "Syncing..." : "Sync Drive"}
               </button>
             )}
@@ -111,38 +158,19 @@ export default function ChatHome() {
             onClick={handleRefreshClassroom} 
             className="glass hover-lift" 
             disabled={syncingClassroom}
-            style={{ padding: "12px 24px", borderRadius: 14, border: "none", cursor: "pointer", color: "var(--text-primary)", fontSize: 15, display: "flex", alignItems: "center", gap: 10, opacity: syncingClassroom ? 0.5 : 1 }}
+            style={{ padding: "10px 18px", borderRadius: 999, border: "1px solid var(--border)", cursor: "pointer", color: "var(--text-primary)", fontSize: 14, display: "flex", alignItems: "center", gap: 8, opacity: syncingClassroom ? 0.5 : 1, boxShadow: "none" }}
           >
-            <span style={{ opacity: 0.8, fontSize: 18 }}>{syncingClassroom ? "⏳" : "🔄"}</span> 
             {syncingClassroom ? "Syncing..." : "Refresh Classroom"}
           </button>
-        </div>
-      </div>
-
-      {/* Secondary Suggestions Grid */}
-      <div className="slide-up" style={{ maxWidth: 760, margin: "0 auto", animationDelay: "0.2s" }}>
-        <h2 style={{ fontSize: 13, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 20, textAlign: "center" }}>Suggested Paradigms</h2>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 16 }}>
-          {suggestions.map((s) => (
-            <button
-              key={s.label}
-              onClick={async () => {
-                const thread = await api.post("/chat/threads", { title: s.prompt.slice(0, 50) });
-                router.push(`/chat/${thread.id}?prompt=${encodeURIComponent(s.prompt)}`);
-              }}
-              className="glass hover-lift"
-              style={{
-                padding: "20px", textAlign: "left", cursor: "pointer", 
-                display: "flex", alignItems: "flex-start", gap: 14, border: "1px solid var(--border)", borderRadius: 16
-              }}
-            >
-              <span style={{ fontSize: 24 }}>{s.icon}</span>
-              <div>
-                <p style={{ fontSize: 14, fontWeight: 700, color: "var(--text-primary)", marginBottom: 4 }}>{s.label}</p>
-                <p style={{ fontSize: 13, color: "var(--text-muted)", lineHeight: 1.5 }}>{s.prompt}</p>
-              </div>
-            </button>
-          ))}
+          
+          <button 
+            onClick={triggerFileUpload} 
+            className="glass hover-lift" 
+            disabled={uploading}
+            style={{ padding: "10px 18px", borderRadius: 999, border: "1px solid var(--border)", cursor: "pointer", color: "var(--text-primary)", fontSize: 14, display: "flex", alignItems: "center", gap: 8, opacity: uploading ? 0.5 : 1, boxShadow: "none" }}
+          >
+            {uploading ? "Uploading..." : "Manual Upload"}
+          </button>
         </div>
       </div>
     </div>

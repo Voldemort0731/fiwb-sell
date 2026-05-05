@@ -305,7 +305,7 @@ class DriveSyncService:
 
         except Exception as e:
             logger.error(f"[Drive] Extraction error for {fid}: {e}")
-            return None
+            return "", None
 
     async def _parse_pdf(self, raw_bytes: bytes) -> str:
         """Parse PDF bytes using pypdf. Returns text with \x0c (form-feed) page separators."""

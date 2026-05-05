@@ -5,6 +5,7 @@ import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useAuthStore } from "@/lib/auth-store";
+import { Trash2 } from "lucide-react";
 
 interface DigitalTwin {
   user: { email: string; name: string; picture: string };
@@ -17,9 +18,15 @@ export default function ProfilePage() {
   const { user } = useAuthStore();
   const [twin, setTwin] = useState<DigitalTwin | null>(null);
   const [courses, setCourses] = useState<any[]>([]);
-  const [driveMaterials, setDriveMaterials] = useState<any[]>([]);
-  const [activeTab, setActiveTab] = useState<"profile" | "courses" | "drive">("profile");
+  const [materials, setMaterials] = useState<any[]>([]);
+  const [activeTab, setActiveTab] = useState<"profile" | "courses" | "documents" | "uploads">("profile");
   const [threads, setThreads] = useState<any[]>([]);
+
+  const fetchMaterials = () => {
+    api.get("/profile/materials").then((mats: any[]) => {
+      if (Array.isArray(mats)) setMaterials(mats);
+    }).catch(() => {});
+  };
 
   useEffect(() => {
     api.get("/profile/digital-twin").then(setTwin).catch(() => {});
@@ -29,26 +36,53 @@ export default function ProfilePage() {
       }
     }).catch(() => {});
     api.get("/chat/threads").then(setThreads).catch(() => {});
-    api.get("/profile/materials").then((mats: any[]) => {
-      if (Array.isArray(mats)) {
-        setDriveMaterials(mats.filter((m: any) => m.source === "drive" && m.type === "folder"));
-      }
-    }).catch(() => {});
+    fetchMaterials();
   }, []);
 
-  const openDriveDoc = (mat: any) => {
-    // Folders open in Drive folder view; files open in file view
-    if (!mat.external_id) return;
-    const url = mat.type === "folder"
-      ? `https://drive.google.com/drive/folders/${mat.external_id}`
-      : `https://drive.google.com/file/d/${mat.external_id}/view`;
+  const handleDeleteMaterial = async (e: React.MouseEvent, matId: number) => {
+    e.stopPropagation();
+    if (!confirm("Do you want to delete this from your Memory?")) return;
+    try {
+      await api.delete(`/profile/materials/${matId}`);
+      fetchMaterials();
+    } catch (err) {
+      console.error("Delete failed", err);
+    }
+  };
+
+  const openMaterial = async (mat: any) => {
+    // If it's a manual upload or we have it locally, we want the /view endpoint directly
+    if (mat.source === "manual_upload" || mat.file_content_exists || (!mat.external_id && mat.source_link?.includes("/proxy/drive/"))) {
+      try {
+        const { token } = await api.get(`/profile/proxy/drive/${mat.id}/token`);
+        const backendUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8002";
+        const viewUrl = `${backendUrl}/profile/proxy/drive/${mat.id}/view?token=${token}`;
+        window.open(viewUrl, "_blank", "noopener,noreferrer");
+        return;
+      } catch (err) {
+        console.error("Failed to get view token:", err);
+      }
+    }
+
+    let url = mat.source_link;
+    if (!url && mat.external_id) {
+       url = mat.type === "folder"
+          ? `https://drive.google.com/drive/folders/${mat.external_id}`
+          : `https://drive.google.com/file/d/${mat.external_id}/view`;
+    }
+
+    if (!url) return;
     window.open(url, "_blank", "noopener,noreferrer");
   };
 
+  const syncedMaterials = materials.filter(m => m.source !== "manual_upload");
+  const manualUploads = materials.filter(m => m.source === "manual_upload");
+
   const tabs = [
-    { id: "profile", label: "🧠 Digital Twin" },
-    { id: "courses", label: "📚 Courses" },
-    { id: "drive", label: `📁 Drive Files${driveMaterials.length ? ` (${driveMaterials.length})` : ""}` },
+    { id: "profile", label: "Digital Twin" },
+    { id: "courses", label: `Courses${courses.length ? ` (${courses.length})` : ""}` },
+    { id: "documents", label: `Documents${syncedMaterials.length ? ` (${syncedMaterials.length})` : ""}` },
+    { id: "uploads", label: `Uploads${manualUploads.length ? ` (${manualUploads.length})` : ""}` },
   ] as const;
 
   return (
@@ -69,6 +103,8 @@ export default function ProfilePage() {
           <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
             <span className="tag tag-purple">Digital Twin Active</span>
             <span className="tag tag-cyan">{courses.length} Courses</span>
+            <span className="tag tag-amber">{syncedMaterials.length} Syncs</span>
+            <span className="tag tag-purple">{manualUploads.length} Uploads</span>
           </div>
         </div>
       </div>
@@ -94,31 +130,31 @@ export default function ProfilePage() {
 
       {/* Digital Twin Content */}
       {activeTab === "profile" && (
-        <div className="fade-in" style={{ display: "grid", gridTemplateColumns: "1fr 340px", gap: 40 }}>
-          <div>
-            {/* Conversation Summaries */}
-            <div style={{ marginBottom: 48 }}>
-              <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 20 }}>Recent Explorations</h2>
-              <div style={{ display: "grid", gap: 12 }}>
-                {threads.length ? threads.slice(0, 5).map((t) => (
-                  <Link key={t.id} href={`/chat/${t.id}`} className="glass hover-lift" style={{ display: "block", textDecoration: "none", padding: 20 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <div>
-                        <h3 style={{ fontSize: 15, fontWeight: 600, color: "var(--text-primary)", marginBottom: 4 }}>{t.title}</h3>
-                        <p style={{ fontSize: 12, color: "var(--text-muted)" }}>Last active {new Date(t.updated_at).toLocaleDateString()}</p>
-                      </div>
-                      <span style={{ fontSize: 12, opacity: 0.5 }}>→</span>
+        <div className="fade-in" style={{ maxWidth: 1000, margin: "0 auto" }}>
+          {/* Conversation Summaries */}
+          <div style={{ marginBottom: 48 }}>
+            <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 20 }}>Recent Explorations</h2>
+            <div style={{ display: "grid", gap: 12 }}>
+              {threads.length ? threads.slice(0, 10).map((t) => (
+                <Link key={t.id} href={`/chat/${t.id}`} className="glass hover-lift" style={{ display: "block", textDecoration: "none", padding: "20px 24px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div>
+                      <h3 style={{ fontSize: 16, fontWeight: 600, color: "var(--text-primary)", marginBottom: 4 }}>{t.title}</h3>
+                      <p style={{ fontSize: 12, color: "var(--text-muted)" }}>Last active {new Date(t.updated_at).toLocaleDateString()}</p>
                     </div>
-                  </Link>
-                )) : (
-                  <p style={{ color: "var(--text-muted)", fontSize: 14 }}>No recent conversations found.</p>
-                )}
-              </div>
+                    <span style={{ fontSize: 14, opacity: 0.5 }}>→</span>
+                  </div>
+                </Link>
+              )) : (
+                <p style={{ color: "var(--text-muted)", fontSize: 14 }}>No recent conversations found.</p>
+              )}
             </div>
+          </div>
 
-            {/* Conceptual Milestones */}
-            <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 20 }}>Conceptual Milestones</h2>
-            {twin?.profile.length ? (
+          {/* Conceptual Milestones */}
+          {twin?.profile && twin.profile.length > 0 && (
+            <>
+              <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 20 }}>Conceptual Milestones</h2>
               <div style={{ display: "grid", gap: 16 }}>
                 {twin.profile.map((p, i) => (
                   <div key={i} className="glass" style={{ padding: 24, borderLeft: "4px solid var(--accent)" }}>
@@ -128,73 +164,53 @@ export default function ProfilePage() {
                   </div>
                 ))}
               </div>
-            ) : (
-              <div className="glass" style={{ padding: 40, textAlign: "center", opacity: 0.6 }}>
-                <p>Engage in chats to build your intellectual profile.</p>
-              </div>
-            )}
-          </div>
-
-          {/* Sidebar: Intelligence Recommendations */}
-          <div>
-            <div className="glass" style={{ padding: 24, position: "sticky", top: 20 }}>
-              <h2 style={{ fontSize: 13, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 20 }}>Recommendations</h2>
-              <div style={{ display: "grid", gap: 20 }}>
-                <div style={{ padding: 16, background: "rgba(139,92,246,0.05)", borderRadius: 12, border: "1px solid rgba(139,92,246,0.1)" }}>
-                  <p style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: "var(--accent)" }}>Next Strategy</p>
-                  <p style={{ fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.5 }}>
-                    Based on your recent focus on {threads[0]?.title || "new topics"}, your twin recommends exploring counter-examples to strengthen your mental model.
-                  </p>
-                </div>
-                <div style={{ padding: 16, background: "rgba(6,182,212,0.05)", borderRadius: 12, border: "1px solid rgba(6,182,212,0.1)" }}>
-                  <p style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: "#06b6d4" }}>Growth Signal</p>
-                  <p style={{ fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.5 }}>
-                    High conceptual density detected in your last 3 sessions. Consider a synthesis session to solidify these links.
-                  </p>
-                </div>
-                <Link href="/chat" className="btn-primary" style={{ textAlign: "center", textDecoration: "none", fontSize: 13, padding: "12px" }}>Start Socratic Session</Link>
-              </div>
-            </div>
-          </div>
+            </>
+          )}
         </div>
       )}
 
       {/* Courses Tab */}
       {activeTab === "courses" && (
         <div className="fade-in" style={{ maxWidth: 900 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 20 }}>
-            {courses.map((c) => (
-              <Link key={c.id} href={`/courses/${c.id}`} style={{ textDecoration: "none", color: "inherit" }}>
-                <div className="glass hover-lift" style={{ padding: 24, height: "100%" }}>
-                  <span style={{ fontSize: 24, display: "block", marginBottom: 12 }}>🎓</span>
-                  <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>{c.name}</h3>
-                  <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12 }}>{c.teacher || "Institutional Course"}</p>
-                  <span className="tag tag-cyan">{c.source}</span>
-                </div>
-              </Link>
-            ))}
-          </div>
+          {courses.length === 0 ? (
+            <div className="glass" style={{ padding: 40, textAlign: "center", color: "var(--text-muted)" }}>
+              <p>No courses returned by the local database yet.</p>
+            </div>
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 20 }}>
+              {courses.map((c) => (
+                <Link key={c.id} href={`/courses/${c.id}`} style={{ textDecoration: "none", color: "inherit" }}>
+                  <div className="glass hover-lift" style={{ padding: 24, height: "100%" }}>
+                    <span style={{ fontSize: 24, display: "block", marginBottom: 12 }}>{c.source === "drive" ? "📁" : "🎓"}</span>
+                    <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>{c.name}</h3>
+                    <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12 }}>{c.teacher || "Institutional Course"}</p>
+                    <span className={c.source === "drive" ? "tag tag-amber" : "tag tag-cyan"}>{c.source}</span>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          )}
         </div>
       )}
-      {/* Drive Files Tab */}
-      {activeTab === "drive" && (
+      {/* Documents Tab */}
+      {activeTab === "documents" && (
         <div className="fade-in" style={{ maxWidth: 1000 }}>
-          {driveMaterials.length === 0 ? (
+          {syncedMaterials.length === 0 ? (
             <div style={{ textAlign: "center", padding: "80px 20px", color: "var(--text-muted)" }}>
-              <div style={{ fontSize: 40, marginBottom: 12 }}>📁</div>
-              <p style={{ fontSize: 15, fontWeight: 500, marginBottom: 6 }}>No Drive files synced yet</p>
-              <p style={{ fontSize: 13 }}>Use the Google Drive picker in the chat or integrations page to sync files.</p>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>📄</div>
+              <p style={{ fontSize: 15, fontWeight: 500, marginBottom: 6 }}>No synced documents found</p>
+              <p style={{ fontSize: 13 }}>Sync Classroom or Drive to populate this list.</p>
             </div>
           ) : (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 16 }}>
-              {driveMaterials.map((mat: any) => {
+              {syncedMaterials.map((mat: any) => {
                 const isFolder = mat.type === "folder";
-                const canOpen = !!mat.external_id;
+                const canOpen = !!(mat.source_link || mat.external_id);
                 return (
                   <div
                     key={mat.id}
                     className="glass hover-lift"
-                    onClick={() => canOpen && openDriveDoc(mat)}
+                    onClick={() => canOpen && openMaterial(mat)}
                     style={{
                       padding: 20,
                       border: "1px solid var(--border)",
@@ -212,18 +228,25 @@ export default function ProfilePage() {
                         background: isFolder ? "rgba(234, 179, 8, 0.15)" : "rgba(6, 182, 212, 0.15)",
                         display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22,
                       }}>
-                        {isFolder ? "📁" : "📄"}
+                        {isFolder ? "📁" : mat.source === "classroom" ? "🎓" : "📄"}
                       </div>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{
                           fontSize: 14, fontWeight: 600, lineHeight: 1.35, marginBottom: 4,
                           overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"
                         }}>{mat.title}</div>
-                        <span style={{
-                          fontSize: 9, fontWeight: 800, letterSpacing: "0.08em",
-                          color: "var(--text-muted)", textTransform: "uppercase",
-                          background: "var(--bg-secondary)", padding: "2px 6px", borderRadius: 4
-                        }}>{isFolder ? "Folder" : mat.type || "File"}</span>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          <span style={{
+                            fontSize: 9, fontWeight: 800, letterSpacing: "0.08em",
+                            color: "var(--text-muted)", textTransform: "uppercase",
+                            background: "var(--bg-secondary)", padding: "2px 6px", borderRadius: 4
+                          }}>{mat.source}</span>
+                          <span style={{
+                            fontSize: 9, fontWeight: 800, letterSpacing: "0.08em",
+                            color: "var(--text-muted)", textTransform: "uppercase",
+                            background: "var(--bg-secondary)", padding: "2px 6px", borderRadius: 4
+                          }}>{isFolder ? "Folder" : mat.type || "File"}</span>
+                        </div>
                       </div>
                       {canOpen && <span style={{ color: "var(--text-muted)", fontSize: 14, flexShrink: 0 }}>↗</span>}
                     </div>
@@ -235,7 +258,99 @@ export default function ProfilePage() {
                       }}>{mat.preview}</p>
                     )}
                     <div style={{ fontSize: 10, color: "var(--text-muted)", letterSpacing: "0.06em", marginTop: "auto" }}>
-                      {canOpen ? "CLICK TO OPEN IN GOOGLE DRIVE ↗" : "NO LINK AVAILABLE"}
+                      {canOpen ? "CLICK TO OPEN SOURCE ↗" : "NO LINK AVAILABLE"}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Uploads Tab */}
+      {activeTab === "uploads" && (
+        <div className="fade-in" style={{ maxWidth: 1000 }}>
+          {manualUploads.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "80px 20px", color: "var(--text-muted)" }}>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>📤</div>
+              <p style={{ fontSize: 15, fontWeight: 500, marginBottom: 6 }}>No manual uploads yet</p>
+              <p style={{ fontSize: 13 }}>Use the manual upload button on the home page to add documents.</p>
+            </div>
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 16 }}>
+              {manualUploads.map((mat: any) => {
+                return (
+                  <div
+                    key={mat.id}
+                    className="glass hover-lift"
+                    onClick={() => openMaterial(mat)}
+                    style={{
+                      padding: 20,
+                      border: "1px solid var(--border)",
+                      borderRadius: 12,
+                      cursor: "pointer",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 10,
+                      transition: "all 0.2s",
+                      position: "relative"
+                    }}
+                  >
+                    <button 
+                      onClick={(e) => handleDeleteMaterial(e, mat.id)}
+                      style={{
+                        position: "absolute", top: 12, right: 12,
+                        background: "rgba(239, 68, 68, 0.1)", border: "none",
+                        width: 28, height: 28, borderRadius: 6, color: "#ef4444",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        cursor: "pointer", zIndex: 10, opacity: 0, transition: "opacity 0.2s"
+                      }}
+                      className="delete-btn"
+                      title="Delete document"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                    <style jsx>{`
+                      .glass:hover .delete-btn { opacity: 1 !important; }
+                    `}</style>
+                    <div style={{ display: "flex", alignItems: "flex-start", gap: 14 }}>
+                      <div style={{
+                        width: 44, height: 44, borderRadius: 10, flexShrink: 0,
+                        background: "rgba(139, 92, 246, 0.15)",
+                        display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22,
+                      }}>
+                        📄
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{
+                          fontSize: 14, fontWeight: 600, lineHeight: 1.35, marginBottom: 4,
+                          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"
+                        }}>{mat.title}</div>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          <span style={{
+                            fontSize: 9, fontWeight: 800, letterSpacing: "0.08em",
+                            color: "var(--text-muted)", textTransform: "uppercase",
+                            background: "var(--bg-secondary)", padding: "2px 6px", borderRadius: 4
+                          }}>Manual</span>
+                          <span style={{
+                            fontSize: 9, fontWeight: 800, letterSpacing: "0.08em",
+                            color: "var(--text-muted)", textTransform: "uppercase",
+                            background: "var(--bg-secondary)", padding: "2px 6px", borderRadius: 4
+                          }}>{mat.type || "File"}</span>
+                        </div>
+                      </div>
+                      <span style={{ color: "var(--text-muted)", fontSize: 14, flexShrink: 0 }}>↗</span>
+                    </div>
+                    {mat.preview && (
+                      <p style={{
+                        fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5, margin: 0,
+                        overflow: "hidden", display: "-webkit-box",
+                        WebkitLineClamp: 2, WebkitBoxOrient: "vertical",
+                      }}>{mat.preview}</p>
+                    )}
+                    <div style={{ fontSize: 10, color: "var(--text-muted)", letterSpacing: "0.06em", marginTop: "auto" }}>
+                      OPEN DOCUMENT ↗
                     </div>
                   </div>
                 );

@@ -11,7 +11,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
-    setMounted(true);
+    const frame = requestAnimationFrame(() => setMounted(true));
+    return () => cancelAnimationFrame(frame);
   }, []);
 
   useEffect(() => {
@@ -23,10 +24,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   if (!mounted || !token) return null;
 
   return (
-    <div style={{ display: "flex", height: "100vh", overflow: "hidden", position: "relative" }}>
+    <div className="claude-shell" style={{ display: "flex", height: "100vh", overflow: "hidden", position: "relative" }}>
       {/* Ambient background orbs */}
-      <div className="orb" style={{ width: 600, height: 600, background: "radial-gradient(circle, rgba(139,92,246,0.06) 0%, transparent 70%)", top: "-150px", right: "20%" }} />
-      <div className="orb" style={{ width: 400, height: 400, background: "radial-gradient(circle, rgba(6,182,212,0.05) 0%, transparent 70%)", bottom: "-100px", left: "30%" }} />
+      <div className="orb" style={{ width: 600, height: 600, background: "radial-gradient(circle, rgba(204,120,92,0.08) 0%, transparent 70%)", top: "-150px", right: "20%" }} />
+      <div className="orb" style={{ width: 400, height: 400, background: "radial-gradient(circle, rgba(216,163,93,0.08) 0%, transparent 70%)", bottom: "-100px", left: "30%" }} />
 
       <Sidebar collapsed={collapsed} setCollapsed={setCollapsed} />
 

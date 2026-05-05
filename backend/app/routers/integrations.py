@@ -3,7 +3,7 @@ Integrations Router — Google Classroom, Drive, Gmail sync + Moodle
 Note: These use standard OAuth scopes. No Google app verification needed
 when the app is in "Testing" mode (up to 100 test users).
 """
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, File, UploadFile
 from fastapi.responses import StreamingResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -18,9 +18,10 @@ from datetime import datetime, timezone, timedelta
 from app.models.database import get_db, User, Course, Material
 from app.utils.dependencies import get_current_user
 from app.services.google_auth import build_credentials, refresh_credentials
-# from app.services.classroom_sync import ClassroomSyncService # Logic is inlined in _do_classroom_sync
 from app.services.drive_sync import DriveSyncService
 from app.intelligence.sm_client import get_sm_client
+import io
+import base64
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,126 @@ class DriveSyncRequest(BaseModel):
     file_ids: List[str]
 
 router = APIRouter()
+
+@router.get("/test-upload")
+async def test_upload():
+    return {"status": "ok", "message": "Integrations router is reachable"}
+
+async def _extract_text_from_bytes(raw_bytes: bytes, mime_type: str) -> str:
+    """Helper to extract text from raw bytes based on mime type for manual uploads."""
+    try:
+        if mime_type == "application/pdf":
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(raw_bytes))
+            text = "\n".join(p.extract_text() or "" for p in reader.pages)[:15000]
+            return text
+        elif mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            import docx
+            doc = docx.Document(io.BytesIO(raw_bytes))
+            text = "\n".join(para.text for para in doc.paragraphs)[:15000]
+            return text
+        elif mime_type == "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+            from pptx import Presentation
+            prs = Presentation(io.BytesIO(raw_bytes))
+            text_runs = []
+            for slide in prs.slides:
+                for shape in slide.shapes:
+                    if hasattr(shape, "text"):
+                        text_runs.append(shape.text)
+                text_runs.append("\n")
+            return "".join(text_runs)[:15000]
+        elif mime_type.startswith("image/"):
+            try:
+                b64 = base64.b64encode(raw_bytes).decode("utf-8")
+                from app.services.openai_service import get_client
+                client = get_client()
+                resp = await client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "Extract all text from this image and provide a high-level academic description of what it shows. Return the transcription followed by the description."},
+                                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64}"}}
+                            ]
+                        }
+                    ],
+                    max_tokens=1000,
+                )
+                return resp.choices[0].message.content[:15000]
+            except Exception as e:
+                logger.error(f"Manual vision OCR error: {e}")
+                return "[Image content could not be processed]"
+        elif mime_type == "text/plain" or mime_type.startswith("text/"):
+            return raw_bytes.decode("utf-8", errors="replace")[:15000]
+        return ""
+    except Exception as e:
+        logger.error(f"Manual text extraction failed: {e}")
+        return ""
+
+
+@router.post("/upload")
+async def manual_upload(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually upload a document to both local DB and Supermemory."""
+    # 1. Read file
+    file_bytes = await file.read()
+    filename = file.filename or "uploaded_file"
+    mime_type = file.content_type or "application/octet-stream"
+    
+    # 2. Extract text
+    content = await _extract_text_from_bytes(file_bytes, mime_type)
+    preview = content[:500] if content else f"Manually uploaded file: {filename}"
+    
+    # 3. Save to local DB
+    new_mat = Material(
+        user_id=current_user.id,
+        title=filename,
+        material_type="file",
+        source="manual_upload",
+        file_content=file_bytes,
+        mime_type=mime_type,
+        indexed_in_supermemory=False,
+        content_preview=preview,
+        full_text=content if content else None,
+        source_link=f"{os.getenv('BACKEND_URL', 'http://localhost:8002')}/profile/proxy/drive/0"
+    )
+    db.add(new_mat)
+    await db.commit()
+    await db.refresh(new_mat)
+    
+    # Update with real ID link
+    backend_url = os.getenv("BACKEND_URL", "http://localhost:8002")
+    new_mat.source_link = f"{backend_url}/profile/proxy/drive/{new_mat.id}"
+    await db.commit()
+    
+    # 4. Index in Supermemory
+    try:
+        sm = get_sm_client()
+        sm_id = await sm.add_document(
+            content=f"User Uploaded Document: {filename}\n\n{content or 'Binary file content'}",
+            metadata={
+                "source": "manual_upload",
+                "type": "user_upload",
+                "user_id": current_user.email,
+                "material_id": str(new_mat.id),
+                "source_link": new_mat.source_link
+            },
+            user_email=current_user.email,
+            title=filename,
+            container_tag=f"user_{current_user.id}"
+        )
+        if sm_id:
+            new_mat.indexed_in_supermemory = True
+            await db.commit()
+    except Exception as e:
+        logger.error(f"Failed to index manual upload in SM: {e}")
+        
+    return {"id": new_mat.id, "title": filename, "indexed": new_mat.indexed_in_supermemory}
+
 
 
 def _extract_classroom_attachments(materials_list: list) -> list:
@@ -165,14 +286,20 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                 
                 print(f"📘 [Sync] Checking: {course.name}")
 
-                # Fetch coursework
-                try:
-                    cw_resp = service.courses().courseWork().list(courseId=course_data["id"]).execute()
+                # ── Fetch ALL CourseWork (Assignments) ──
+                page_token = None
+                while True:
+                    await asyncio.sleep(0.5) # Rate limit safety
+                    cw_resp = service.courses().courseWork().list(
+                        courseId=course_data["id"],
+                        pageSize=50,
+                        pageToken=page_token
+                    ).execute()
+                    
                     course_works = cw_resp.get("courseWork", [])
-                    print(f"   - Found {len(course_works)} coursework/assignments")
-                    for cw in course_works[:20]:
-                        # Avoid hitting per-user rate limits
-                        await asyncio.sleep(0.5)
+                    print(f"   - Found batch of {len(course_works)} coursework/assignments")
+                    
+                    for cw in course_works:
                         title = cw.get('title', 'Untitled Assignment')
                         desc = cw.get('description','')
                         doc = f"Course: {course.name}\nType: Assignment\nTitle: {title}\nDescription: {desc}\nDue: {cw.get('dueDate', {})}"
@@ -251,16 +378,17 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                     continue
 
                                 print(f"     🔗 [Deep Sync] Found embedded Drive link in assignment: {fid}")
-                                content = await _get_drive_file_content(drive_service, fid)
-                                if content:
+                                content, raw_bytes = await _get_drive_file_content(drive_service, fid)
+                                if content or raw_bytes:
                                     # Local DB
                                     new_mat = Material(
                                         user_id=user_id, course_id=course.id,
                                         title=f"Linked File ({fid[:8]})", material_type="file",
                                         source="classroom", external_id=fid,
                                         parent_external_id=cw["id"],
-                                        content_preview=content[:500],
+                                        content_preview=content[:500] if content else None,
                                         full_text=content,
+                                        file_content=raw_bytes,
                                         indexed_in_supermemory=True, # Will commit below
                                         source_link=f"{os.getenv('BACKEND_URL', 'http://localhost:8002')}/profile/proxy/drive/0"
                                     )
@@ -303,12 +431,14 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                     continue
 
                                 print(f"     📎 [Attachment] Found in assignment: {df['title']}")
-                                content = await _get_drive_file_content(drive_service, df['id'], df.get('mimeType', ''))
+                                content, raw_bytes = await _get_drive_file_content(drive_service, df['id'], df.get('mimeType', ''))
                                 backend_url = os.getenv('BACKEND_URL', 'http://localhost:8002')
 
                                 if existing:
                                     existing.full_text = content
                                     existing.content_preview = content[:500] if content else existing.content_preview
+                                    existing.file_content = raw_bytes
+                                    existing.mime_type = df.get('mimeType')
                                     await db.commit()
                                     mat_to_index = existing
                                 else:
@@ -319,6 +449,8 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                         parent_external_id=cw["id"],
                                         content_preview=content[:500] if content else None,
                                         full_text=content if content else None,
+                                        file_content=raw_bytes,
+                                        mime_type=df.get('mimeType'),
                                         indexed_in_supermemory=False,
                                         source_link=f"{backend_url}/profile/proxy/drive/0"
                                     )
@@ -409,16 +541,25 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                 source_link=cw_alternate_link,
                                 attachments=json.dumps(cw_attachments),
                             ))
-                        await db.commit()
-                except Exception as e:
-                    logger.exception(f"   ⚠️ [Sync] Coursework error in {course.name}: {e}")
+                        # Pagination Check
+                    page_token = cw_resp.get("nextPageToken")
+                    if not page_token:
+                        break
 
-                # Fetch announcements
-                try:
-                    ann_resp = service.courses().announcements().list(courseId=course_data["id"]).execute()
+                # ── Fetch ALL Announcements ──
+                page_token = None
+                while True:
+                    await asyncio.sleep(0.5)
+                    ann_resp = service.courses().announcements().list(
+                        courseId=course_data["id"],
+                        pageSize=50,
+                        pageToken=page_token
+                    ).execute()
+                    
                     announcements = ann_resp.get("announcements", [])
-                    print(f"   - Found {len(announcements)} announcements")
-                    for ann in announcements[:10]:
+                    print(f"   - Found batch of {len(announcements)} announcements")
+                    
+                    for ann in announcements:
                         await asyncio.sleep(0.5)
                         text = ann.get('text','')
                         doc = f"Course: {course.name}\nType: Announcement\nText: {text}"
@@ -492,16 +633,17 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                     continue
 
                                 print(f"     🔗 [Deep Sync] Found embedded Drive link in text: {fid}")
-                                content = await _get_drive_file_content(drive_service, fid)
-                                if content:
+                                content, raw_bytes = await _get_drive_file_content(drive_service, fid)
+                                if content or raw_bytes:
                                     # Save to local DB
                                     new_mat = Material(
                                         user_id=user_id, course_id=course.id,
                                         title=f"Linked File ({fid[:8]})", material_type="file",
                                         source="classroom", external_id=fid,
                                         parent_external_id=ann["id"],
-                                        content_preview=content[:500],
+                                        content_preview=content[:500] if content else None,
                                         full_text=content,
+                                        file_content=raw_bytes,
                                         indexed_in_supermemory=True, # Will commit below
                                         source_link=f"{os.getenv('BACKEND_URL', 'http://localhost:8002')}/profile/proxy/drive/0"
                                     )
@@ -547,12 +689,14 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                     continue
 
                                 print(f"     📎 [Attachment] Found in announcement: {df['title']}")
-                                content = await _get_drive_file_content(drive_service, df['id'], df.get('mimeType', ''))
+                                content, raw_bytes = await _get_drive_file_content(drive_service, df['id'], df.get('mimeType', ''))
                                 backend_url = os.getenv('BACKEND_URL', 'http://localhost:8002')
 
                                 if existing:
                                     existing.full_text = content
                                     existing.content_preview = content[:500] if content else existing.content_preview
+                                    existing.file_content = raw_bytes
+                                    existing.mime_type = df.get('mimeType')
                                     await db.commit()
                                     mat_to_index = existing
                                 else:
@@ -563,6 +707,8 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                         parent_external_id=ann["id"],
                                         content_preview=content[:500] if content else None,
                                         full_text=content if content else None,
+                                        file_content=raw_bytes,
+                                        mime_type=df.get('mimeType'),
                                         indexed_in_supermemory=False,
                                         source_link=f"{backend_url}/profile/proxy/drive/0"
                                     )
@@ -631,17 +777,26 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                 await db.commit()
                                 processed_file_ids.add(yt_url)
                         
-                        await db.commit() 
+                    # Pagination Check
+                    page_token = ann_resp.get("nextPageToken")
+                    if not page_token:
+                        break
 
-                except Exception as e:
-                    logger.exception(f"   ⚠️ [Sync] Announcement error in {course.name}: {e}")
-
-                # Fetch materials (Resources)
-                try:
-                    mat_resp = service.courses().courseWorkMaterials().list(courseId=course_data["id"]).execute()
+                # ── Fetch ALL Materials (Resources) ──
+                page_token = None
+                while True:
+                    await asyncio.sleep(0.5)
+                    mat_resp = service.courses().courseWorkMaterials().list(
+                        courseId=course_data["id"],
+                        pageSize=50,
+                        pageToken=page_token
+                    ).execute()
+                    
                     course_materials = mat_resp.get("courseWorkMaterial", [])
-                    print(f"   - Found {len(course_materials)} materials/resources")
-                    for cm in course_materials[:15]:
+                    print(f"   - Found batch of {len(course_materials)} materials/resources")
+                    
+                    for cm in course_materials:
+                        await asyncio.sleep(0.5)
                         title = cm.get('title', 'Untitled Resource')
                         desc = cm.get('description','')
                         doc = f"Course: {course.name}\nType: Resource\nTitle: {title}\nDescription: {desc}"
@@ -712,16 +867,17 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                     continue
 
                                 print(f"     🔗 [Deep Sync] Found embedded Drive link in resource: {fid}")
-                                content = await _get_drive_file_content(drive_service, fid)
-                                if content:
+                                content, raw_bytes = await _get_drive_file_content(drive_service, fid)
+                                if content or raw_bytes:
                                     # Save to local DB
                                     new_mat = Material(
                                         user_id=user_id, course_id=course.id,
                                         title=f"Linked File ({fid[:8]})", material_type="file",
                                         source="classroom", external_id=fid,
                                         parent_external_id=cm["id"],
-                                        content_preview=content[:500],
+                                        content_preview=content[:500] if content else None,
                                         full_text=content,
+                                        file_content=raw_bytes,
                                         indexed_in_supermemory=True, # Will commit below
                                         source_link=f"{os.getenv('BACKEND_URL', 'http://localhost:8002')}/profile/proxy/drive/0"
                                     )
@@ -863,9 +1019,6 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                         
                         await db.commit() # Save incrementally
 
-                except Exception as e:
-                    print(f"   ⚠️ [Sync] Materials error in {course.name}: {e}")
-
             # Mark user as synced
             result = await db.execute(select(User).where(User.id == user_id))
             user = result.scalar_one_or_none()
@@ -874,6 +1027,8 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
             await db.commit()
     except Exception as e:
         print(f"[Classroom Sync] Error: {e}")
+
+
 
 
 # ── Google Drive ──────────────────────────────────────────────────────────
@@ -891,11 +1046,48 @@ async def _get_drive_file_content(service, file_id: str, mime_type: str = "") ->
                 export = await asyncio.to_thread(lambda: service.files().export(fileId=file_id, mimeType="text/plain").execute())
                 return export.decode("utf-8", errors="replace")[:15000], raw_bytes
             elif mime_type == "application/pdf":
-                import io
                 from pypdf import PdfReader
                 reader = PdfReader(io.BytesIO(raw_bytes))
                 text = "\n".join(p.extract_text() or "" for p in reader.pages)[:15000]
                 return text, raw_bytes
+            elif mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                import docx
+                doc = docx.Document(io.BytesIO(raw_bytes))
+                text = "\n".join(para.text for para in doc.paragraphs)[:15000]
+                return text, raw_bytes
+            elif mime_type == "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+                from pptx import Presentation
+                prs = Presentation(io.BytesIO(raw_bytes))
+                text_runs = []
+                for slide in prs.slides:
+                    for shape in slide.shapes:
+                        if hasattr(shape, "text"):
+                            text_runs.append(shape.text)
+                return "\n".join(text_runs)[:15000], raw_bytes
+            elif mime_type.startswith("image/"):
+                # Vision OCR using GPT-4o
+                try:
+                    b64 = base64.b64encode(raw_bytes).decode("utf-8")
+                    from app.services.openai_service import get_client
+                    client = get_client()
+                    resp = await client.chat.completions.create(
+                        model="gpt-4o",
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": "Extract all text from this image and provide a high-level academic description of what it shows. Return the transcription followed by the description."},
+                                    {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64}"}}
+                                ]
+                            }
+                        ],
+                        max_tokens=1000,
+                    )
+                    vision_text = resp.choices[0].message.content
+                    return vision_text[:15000], raw_bytes
+                except Exception as ve:
+                    logger.error(f"Vision OCR error: {ve}")
+                    return "[Image content could not be processed]", raw_bytes
             elif "google-apps" in mime_type:
                 try:
                     export = await asyncio.to_thread(lambda: service.files().export(fileId=file_id, mimeType="text/plain").execute())

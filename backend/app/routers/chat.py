@@ -3,6 +3,7 @@ Chat Router — Thread management + streaming message endpoint
 Uses the new intelligence module (RetrievalOrchestrator + PromptArchitect)
 ported from the reference fiwb-mvp architecture.
 """
+from __future__ import annotations
 import json
 import asyncio
 from typing import List, Optional, Dict, Any
@@ -14,25 +15,16 @@ from sqlalchemy import select, update, func
 from pydantic import BaseModel
 from app.models.database import get_db, ChatThread, ChatMessage, User, Material, AsyncSessionLocal
 from app.utils.dependencies import get_current_user
-from app.services.openai_service import synthesize_memory
+from app.services.openai_service import synthesize_memory, stream_llm_response
 from app.intelligence.retrieval import RetrievalOrchestrator
 from app.intelligence.prompt_architect import PromptArchitect
 from app.intelligence.sm_client import get_sm_client
-from openai import AsyncOpenAI
 import os
 import logging
 
 logger = logging.getLogger("uvicorn.error")
 
 router = APIRouter()
-_openai_client = None
-
-
-def get_openai():
-    global _openai_client
-    if _openai_client is None:
-        _openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    return _openai_client
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────
@@ -321,11 +313,10 @@ async def regenerate_message(
     # 5. Update target message
     target_msg.content = body.new_content
     await db.commit()
-
     return await _generate_chat_response(body.thread_id, body.new_content, None, current_user, db, body.message_id)
 
 
-async def _generate_chat_response(thread_id: int, content: str, image_base64: str | None, current_user: User, db: AsyncSession, user_msg_id: int, viewer_context: dict = None):
+async def _generate_chat_response(thread_id: int, content: str, image_base64: Optional[str], current_user: User, db: AsyncSession, user_msg_id: int, viewer_context: dict = None):
     """Internal helper to stream GPT response and handle memory synthesis."""
     # Fetch thread for context
     res = await db.execute(select(ChatThread).where(ChatThread.id == thread_id))
@@ -374,17 +365,18 @@ async def _generate_chat_response(thread_id: int, content: str, image_base64: st
                 return
             if mm_undo:
                 yield f"data: {json.dumps({'type': 'mind_map_action', 'action': 'undo', 'docId': _active_doc_id})}\n\n"
-                yield f"data: {json.dumps({'type': 'chunk', 'content': 'Reverting the last mind map edit\u2026'})}\n\n"
+                yield f"data: {json.dumps({'type': 'chunk', 'content': 'Reverting the last mind map edit…'})}\n\n"
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 return
             if mm_regen:
                 yield f"data: {json.dumps({'type': 'mind_map_action', 'action': 'regenerate', 'docId': _active_doc_id})}\n\n"
-                yield f"data: {json.dumps({'type': 'chunk', 'content': 'Regenerating mind map\u2026'})}\n\n"
+                yield f"data: {json.dumps({'type': 'chunk', 'content': 'Regenerating mind map…'})}\n\n"
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 return
             if mm_edit:
                 yield f"data: {json.dumps({'type': 'mind_map_action', 'action': 'edit', 'docId': _active_doc_id, 'instruction': _q})}\n\n"
-                yield f"data: {json.dumps({'type': 'chunk', 'content': f'Applying edit: \u201c{_q}\u201d'})}\n\n"
+                _edit_msg = f'Applying edit: “{_q}”'
+                yield f"data: {json.dumps({'type': 'chunk', 'content': _edit_msg})}\n\n"
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 return
             if mm_open:
@@ -420,7 +412,8 @@ async def _generate_chat_response(thread_id: int, content: str, image_base64: st
                     _msg = f'Generating mind map\u2026'
                 else:
                     _msg = 'I couldn\u2019t find that document. Open it in the viewer first, then ask me to mind map it.'
-                yield f"data: {json.dumps({'type': 'chunk', 'content': _msg})}\n\n"
+                _msg_with_tag = f"{_msg} [[mindmap:{resolved_doc_id}]]" if resolved_doc_id else _msg
+                yield f"data: {json.dumps({'type': 'chunk', 'content': _msg_with_tag})}\n\n"
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 return
 
@@ -539,20 +532,10 @@ async def _generate_chat_response(thread_id: int, content: str, image_base64: st
                 citation_map=state.citation_map,
             )
             
-            # ── Step 3: Stream GPT-4o response ─────────────────────────────
-            client = get_openai()
-            stream = await client.chat.completions.create(
-                model="gpt-4o",
-                messages=messages,
-                stream=True,
-                max_tokens=2000,
-            )
-
-            async for chunk in stream:
-                delta = chunk.choices[0].delta
-                if delta.content:
-                    state.full_response += delta.content
-                    yield f"data: {json.dumps({'type': 'chunk', 'content': delta.content})}\n\n"
+            # ── Step 3: Stream Gemini response ─────────────────────────────
+            async for text in stream_llm_response(messages):
+                state.full_response += text
+                yield f"data: {json.dumps({'type': 'chunk', 'content': text})}\n\n"
 
             # ── Step 4: High-Priority DB Persistence ─────────────────────────
             try:

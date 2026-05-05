@@ -102,15 +102,6 @@ export default function CitationChip({ citation }: CitationChipProps) {
     >
       <BookOpen size={10} strokeWidth={2.5} />
       {citation.label}
-      <span
-        style={{
-          opacity: 0.6,
-          fontSize: "0.85em",
-          fontWeight: 400,
-        }}
-      >
-        p.{citation.pageNumber}
-      </span>
     </button>
   );
 }

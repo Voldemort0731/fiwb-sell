@@ -218,7 +218,7 @@ export default function CoursePage({ params }: { params: Promise<{ courseId: str
               { n: fileCount, label: "files", color: "#f59e0b" },
             ].filter(b => b.n > 0).map(b => (
               <span key={b.label} style={{
-                background: `rgba(0,0,0,0.25)`, border: `1px solid ${b.color}40`,
+                background: `${b.color}18`, border: `1px solid ${b.color}40`,
                 color: b.color, fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 20
               }}>{b.n} {b.label}</span>
             ))}

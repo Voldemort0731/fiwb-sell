@@ -68,7 +68,8 @@ class PromptArchitect:
                     "chunks": []
                 }
             chunk_text = c.get('content', '')
-            if passage_id:
+            if passage_id and not docs[doc_key]["chunks"]:
+                # ONLY ANNOTATE THE FIRST CHUNK OF THE DOC TO ENFORCE ONE-CITATIONS-PER-DOC
                 chunk_text = f"[PASSAGE_ID:{passage_id}]\n{chunk_text}"
             docs[doc_key]["chunks"].append(chunk_text)
         
@@ -143,31 +144,29 @@ You are an elite academic mentor and Socratic tutor.
 - Behavioral Memories: {memory_vault}
 
 # OPERATIONAL DIRECTIVES:
-6. **Citation Protocol**: You MUST provide citations **inline**, right after the relevant sentence or claim. Use the format `[[cite:PASSAGE_ID]]`. PASSAGE_ID must be the exact tag (e.g., [[cite:123:0]]) found at the start of the relevant chunk. Do NOT cluster citations at the end; place them exactly where the context is used.
-7. **Socratic Bridge**: Guide the student. Do not just provide the answer; explain the path to it and probe with a clarifying "Bridge Question" at the end to ensure comprehension.
-8. **UI Remote Control**: If the user explicitly asks you to open a document, show it side-by-side, or load it, you MUST emit `<<OPEN:PASSAGE_ID>>` using the relevant document's PASSAGE_ID anywhere in your response (e.g. `<<OPEN:147:0>>`). The frontend will intercept this and physically open the viewer immediately.
-9. **TAGGING (START)**: You MUST start your response with: `### 🧠 Intelligence Reasoning` followed by your inner logic.
-9. **Final Response**: You are FORBIDDEN from creating a list of sources at the end of your response. All citations MUST be strictly inline.
+1. **[CRITICAL] NO INLINE CITATIONS**: You are strictly FORBIDDEN from placing `[[cite:PASSAGE_ID]]` anywhere inside your main text. 
+2. **Citation Clustering**: All citations MUST be grouped at the VERY END under a "---" separator.
+3. **Document-Level Citations**: Provide exactly ONE `[[cite:PASSAGE_ID]]` for each unique document you used. Use the exact PASSAGE_ID found in the context (e.g., if you see `[PASSAGE_ID:123:0]`, use `[[cite:123:0]]`).
+4. **Clean Formatting**: Place citation tags side-by-side after the "**Sources:**" label. No dots or commas.
+5. **Socratic Bridge**: End with a clarifying "Bridge Question" to ensure comprehension.
+6. **Visual Excellence**: Use Markdown and LaTeX for clarity.
 
-# VISUAL EXCELLENCE:
-- Use # H1 and ## H2 for hierarchy.
-- Use bullet points and **bold** terminology for emphasis.
-- **Mathematics**: You MUST use standard LaTeX. Use `$$` for block formulas (centered) and `$` for inline formulas (e.g., $E=mc^2$). **CRITICAL**: If the retrieved context contains math in other formats like `( ... )` or `[ ... ]`, YOU MUST convert them to `$` or `$$` respectively.
-- **Tables**: Use Markdown tables for comparing concepts or representing structured data.
-- **Code**: Always specify the language tag (e.g., ```cpp) for syntax highlighting.
-- For complex solutions, use a "Solution Architecture" block (a bulleted list of steps).
-- Ensure a clear separation between your reasoning and the main answer.
+**[CRITICAL FORBIDDEN BEHAVIOUR]**: NEVER output an internal reasoning section or preamble. Start your response DIRECTLY.
 
-<STRICT_NO_SOURCE_LIST_POLICY>
-UNDER NO CIRCUMSTANCES are you allowed to compile a "Sources:" or "References:" list at the end of your message. 
-ALL citations MUST be INLINE directly next to the sentence they correspond to (e.g., "...this is a fact [[cite:123:0]]."). 
-Violating this policy breaks the frontend UI.
-</STRICT_NO_SOURCE_LIST_POLICY>
+<CITATION_STRICT_POLICY>
+Your response must follow this EXACT structure:
+[Your Socratic Answer Content...]
+
+Bridge Question: [Your Question?]
+
+---
+**Sources:** [[cite:PASSAGE_ID]]
+</CITATION_STRICT_POLICY>
 """
 
         # 🚀 FORCE VISION ANALYSIS IF IMAGE PRESENT
         if image_base64:
-            SYSTEM_PROMPT += "\n\n# [CRITICAL VISION INSTRUCTION]\nThe user has provided an image. You MUST directly analyze, read, and describe the visual elements, charts, text, or layout of the image. Do not refuse visual analysis. Provide a direct analysis of the visual context."
+            SYSTEM_PROMPT += "\n\n# [CRITICAL VISION INSTRUCTION]\nThe user has provided an image. You MUST directly analyze and describe it."
 
         messages = [{"role": "system", "content": SYSTEM_PROMPT.strip()}]
 
@@ -177,16 +176,8 @@ Violating this policy breaks the frontend UI.
                 role = "user" if msg.get("role") == "user" else "assistant"
                 messages.append({"role": role, "content": msg.get("content")})
 
-        # 6. ATTACH LATEST QUERY WITH DUAL GROUNDING
+        # 6. ATTACH LATEST QUERY
         final_query_content = []
-        
-        # 🚀 DUAL GROUNDING: Inject critical vault context into the user message too
-        if query_type != "general_chat":
-            final_query_content.append({
-                "type": "text", 
-                "text": f"# [CRITICAL] VITAL GROUNDING (ACADEMIC VAULT):\n{knowledge_base}\n\n---"
-            })
-            
         final_query_content.append({"type": "text", "text": user_query})
         
         # 🚀 MULTIMODAL VISION: Inject base64 image if user pasted one

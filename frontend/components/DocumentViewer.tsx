@@ -11,7 +11,7 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useViewerStore, CitationData } from "@/lib/viewer-store";
 import { api } from "@/lib/api";
-import { X, ChevronLeft, RotateCcw, ExternalLink, ArrowLeftRight } from "lucide-react";
+import { X, ChevronLeft, RotateCcw, ExternalLink, ArrowLeftRight, Maximize2 } from "lucide-react";
 
 const VIEWER_ORIGIN =
   typeof window !== "undefined" ? window.location.origin : "";
@@ -31,10 +31,18 @@ export default function DocumentViewer() {
     viewerWidth,
     toggleViewerPosition,
     closeViewer,
+    toggleMaximize,
+    isMaximized: isViewerMaximized,
     setLoadingState,
     setPageNumber,
     goBack,
   } = useViewerStore();
+
+  const [urlType, setUrlType] = (typeof window !== 'undefined') ? (function(){
+    // Using a local state to track if we're in local (controllable) or drive (readonly) mode
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    return [useViewerStore((state) => (state as any).urlType || "local"), (val: string) => useViewerStore.setState({ urlType: val } as any)];
+  })() : ["local", () => {}];
 
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -52,8 +60,15 @@ export default function DocumentViewer() {
       const token = resToken?.token;
       if (!token) throw new Error("Backend returned no access token.");
 
-      // 2. Resolve URL via proxy (returns {url, material_id, type})
-      const resUrl = await api.get(`/profile/proxy/drive/${materialId}/${mode}?token=${encodeURIComponent(token)}`);
+      // 2. For 'view' mode, we construct the direct binary URL manually
+      // since the endpoint returns binary content, not JSON.
+      if (mode === "view") {
+        const viewUrl = `${BACKEND_URL}/profile/proxy/drive/${materialId}/view?token=${encodeURIComponent(token)}`;
+        return { url: viewUrl, type: "local" };
+      }
+
+      // 3. Resolve 'preview' URL via proxy (returns JSON {url, material_id, type})
+      const resUrl = await api.get(`/profile/proxy/drive/${materialId}/preview?token=${encodeURIComponent(token)}`);
       
       if (resUrl?.url) {
         console.log(`[DocumentViewer] Resolved (${resUrl.type || "drive"}): ${resUrl.url.substring(0, 60)}...`);
@@ -61,8 +76,13 @@ export default function DocumentViewer() {
       }
 
       throw new Error("Backend did not return a valid URL.");
-    } catch (e) {
+    } catch (e: any) {
       console.error("[DocumentViewer] Failed to resolve document URL:", e);
+      const msg = e.message || "Unknown retrieval error.";
+      // Catch syntax errors specifically as they imply binary vs json confusion
+      if (msg.includes("Unexpected token") || msg.includes("is not valid JSON")) {
+        console.error("[DocumentViewer] Detected binary data where JSON was expected. Corrupted material entry suspected.");
+      }
       return null;
     }
   }, []);
@@ -161,11 +181,13 @@ export default function DocumentViewer() {
       if (cancelled) return;
 
       if (!result) {
+        console.error(`[DocumentViewer] Resolution failed for material ${docId}`);
         setLoadingState("error", "Could not securely retrieve this document. Please try again.");
         return;
       }
 
-      const { url: previewUrl, type: urlType } = result;
+      const { url: previewUrl, type: resolvedType } = result;
+      setUrlType(resolvedType);
 
       // Also get the view URL for the external-link button
       const viewResult = await fetchDocUrl(docId!, "view");
@@ -180,18 +202,17 @@ export default function DocumentViewer() {
       }
 
       // ── NEW: Handle Local Autonomous Viewing ──
-      if (urlType === "local" && iframeRef.current) {
+      if (resolvedType === "local" && iframeRef.current) {
         setLoadingState("loading");
         iframeRef.current.onload = () => {
           if (!cancelled) setLoadingState("ready");
         };
-        // Use our local viewer to render the binary BLOB with automatic tracking
-        // Append #zoom=page-width to ensure text is readable at any column width
         const localViewerUrl = `/viewer/viewer.html?file=${encodeURIComponent(previewUrl)}#zoom=page-width`;
         console.log("[DocumentViewer] Loading autonomous local viewer:", localViewerUrl.substring(0, 100));
         iframeRef.current.src = localViewerUrl;
         return;
       }
+
 
 
       // Drive file — embed in native Drive preview iframe (Default legacy behavior)
@@ -226,7 +247,7 @@ export default function DocumentViewer() {
       docId: state.docId ?? "",
       passageId: state.activePassageId ?? "",
       pageNumber: state.pageNumber ?? 1,
-      highlightText: "", 
+      highlightText: state.activeHighlightText ?? "", 
       label: "",
     };
   }, [activePassageId, isOpen]);
@@ -235,13 +256,13 @@ export default function DocumentViewer() {
   // ── Notify Iframe on Width Change (Handles Zoom Re-calc) ──
   useEffect(() => {
     if (loadingState === "ready" && iframeRef.current?.contentWindow) {
-      // Small delay to let the CSS transition finish or flex-basis to settle
+      // Wait for the CSS transition (300ms) to finish before recalculating zoom
       const t = setTimeout(() => {
         iframeRef.current?.contentWindow?.postMessage({ type: "RESIZE_VIEWER" }, VIEWER_ORIGIN);
-      }, 50);
+      }, 350);
       return () => clearTimeout(t);
     }
-  }, [viewerWidth, loadingState]);
+  }, [viewerWidth, isViewerMaximized, loadingState]);
 
 
   const handleClose = useCallback(() => {
@@ -279,49 +300,56 @@ export default function DocumentViewer() {
     <div
       id="doc-viewer-panel"
       style={{
-        width: `${viewerWidth}%`,
-        minWidth: 450,
-        maxWidth: "85%",
+        width: "100%",
         height: "100%",
         display: "flex",
         flexDirection: "column",
-        borderLeft: "1px solid var(--border)",
-        background: "var(--bg-secondary, #0f0f0f)",
+        background: "var(--bg-secondary, #1a1a1a)",
         position: "relative",
-        flexShrink: 0,
         overflow: "hidden",
       }}
     >
       {/* ── Floating Premium Toolbar ── */}
-      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-1.5 p-1.5 rounded-2xl bg-black/40 backdrop-blur-xl border border-white/10 shadow-2xl transition-all hover:bg-black/60 group/toolbar">
+      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-1.5 p-1.5 rounded-2xl bg-white/40 backdrop-blur-xl border border-black/10 shadow-2xl transition-all hover:bg-white/60 group/toolbar">
         {/* Back button */}
         {history.length > 0 && (
           <button
             onClick={() => goBack()}
             title="Back"
-            className="p-1.5 hover:bg-white/10 rounded-xl text-white/50 hover:text-white transition-all active:scale-95"
+            className="p-1.5 hover:bg-black/10 rounded-xl text-black/50 hover:text-black transition-all active:scale-95"
           >
             <ChevronLeft size={16} />
           </button>
         )}
 
-        {/* Page indicator pill */}
-        <div className="px-3 py-1.5 rounded-xl bg-white/5 border border-white/5 flex items-center gap-2 min-w-[90px] justify-center">
-          <span className="text-[11px] font-bold tracking-tight text-white/70 uppercase">
+        {/* Page indicator pill - only for controllable local viewer */}
+        <div className="px-3 py-1.5 rounded-xl bg-black/5 border border-black/5 flex items-center gap-2 min-w-[90px] justify-center">
+          <span className="text-[11px] font-bold tracking-tight text-black/70 uppercase">
             {loadingState === "loading" && "..."}
-            {loadingState === "ready" && pageNumber && `PG. ${pageNumber}`}
+            {loadingState === "ready" && (urlType === "local" ? (pageNumber && `PG. ${pageNumber}`) : "DOC")}
             {loadingState === "error" && "ERROR"}
           </span>
         </div>
 
         <div className="w-[1px] h-4 bg-white/10 mx-1" />
 
-        {/* Zoom Controls */}
-        <div className="flex items-center gap-1">
-          <button onClick={() => handleZoom("out")} className="p-1.5 hover:bg-white/10 rounded-xl text-white/40 hover:text-white transition-all" title="Zoom Out">-</button>
-          <button onClick={() => handleZoom("fit")} className="px-2 py-1.5 hover:bg-purple-500/20 rounded-xl text-[9px] font-black tracking-tighter text-purple-400 hover:text-purple-300 transition-all" title="Fit to Width">FIT</button>
-          <button onClick={() => handleZoom("in")} className="p-1.5 hover:bg-white/10 rounded-xl text-white/40 hover:text-white transition-all" title="Zoom In">+</button>
-        </div>
+        {/* Zoom Controls - only for controllable local viewer */}
+        {urlType === "local" && (
+          <div className="flex items-center gap-1">
+            <button onClick={() => handleZoom("out")} className="p-1.5 hover:bg-black/10 rounded-xl text-black/40 hover:text-black transition-all" title="Zoom Out">-</button>
+            <button onClick={() => handleZoom("fit")} className="px-2 py-1.5 hover:bg-purple-500/10 rounded-xl text-[9px] font-black tracking-tighter text-purple-600 hover:text-purple-700 transition-all" title="Fit to Width">FIT</button>
+            <button onClick={() => handleZoom("in")} className="p-1.5 hover:bg-black/10 rounded-xl text-black/40 hover:text-black transition-all" title="Zoom In">+</button>
+          </div>
+        )}
+
+        {/* Maximize / Minimize toggle */}
+        <button
+          onClick={() => useViewerStore.getState().toggleMaximize()}
+          title={isViewerMaximized ? "Minimize focus" : "Maximize focus"}
+          className="p-1.5 hover:bg-purple-500/10 rounded-xl text-purple-600 hover:text-purple-700 transition-all"
+        >
+          {isViewerMaximized ? <Maximize2 size={16} className="rotate-180 scale-75" /> : <Maximize2 size={16} />}
+        </button>
 
         <div className="w-[1px] h-4 bg-white/10 mx-1" />
 
@@ -329,7 +357,7 @@ export default function DocumentViewer() {
         <button
           onClick={() => toggleViewerPosition()}
           title="Swap sides"
-          className="p-1.5 hover:bg-white/10 rounded-xl text-white/40 hover:text-white transition-all active:rotate-180"
+          className="p-1.5 hover:bg-black/10 rounded-xl text-black/40 hover:text-black transition-all active:rotate-180"
         >
           <ArrowLeftRight size={16} />
         </button>
@@ -338,7 +366,7 @@ export default function DocumentViewer() {
         <button
           onClick={handleClose}
           id="doc-viewer-close-btn"
-          className="p-1.5 hover:bg-red-500/20 rounded-xl text-white/40 hover:text-red-400 transition-all"
+          className="p-1.5 hover:bg-red-500/10 rounded-xl text-black/40 hover:text-red-500 transition-all"
         >
           <X size={16} />
         </button>
@@ -401,7 +429,7 @@ export default function DocumentViewer() {
             padding: 24,
             pointerEvents: "none",
             zIndex: 5,
-            background: "var(--bg-secondary, #0f0f0f)",
+            background: "var(--bg-secondary, #ffffff)",
           }}
         >
           {[80, 100, 60, 90, 75, 55, 100, 70].map((w, i) => (
@@ -411,7 +439,7 @@ export default function DocumentViewer() {
                 height: 14,
                 width: `${w}%`,
                 borderRadius: 4,
-                background: "rgba(255,255,255,0.06)",
+                background: "rgba(0,0,0,0.06)",
                 animation: `shimmer 1.5s ${i * 0.1}s infinite`,
               }}
             />
@@ -428,7 +456,7 @@ export default function DocumentViewer() {
           flex: 1,
           border: "none",
           width: "100%",
-          background: "var(--bg-secondary, #0f0f0f)",
+          background: "var(--bg-secondary, #ffffff)",
           opacity: loadingState === "ready" ? 1 : 0,
           transition: "opacity 0.3s ease",
         }}

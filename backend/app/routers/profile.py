@@ -164,8 +164,9 @@ async def get_course_materials(
             "full_text": m.full_text,
             "external_id": m.external_id, # Link for attachments
             "parent_id": m.parent_external_id, # Return link to parent
-            "source_link": m.source_link, # For direct viewing
+            "source_link": m.source_link,
             "attachments": json.loads(m.attachments) if m.attachments else [],
+            "file_content_exists": m.file_content is not None,
             "created_at": m.created_at.isoformat(),
             "due_date": m.due_date.isoformat() if m.due_date else None,
         }
@@ -219,8 +220,8 @@ async def get_pdf_token(
     material = result.scalar_one_or_none()
     if not material:
         raise HTTPException(status_code=404, detail="Material not found")
-    if not material.external_id:
-        raise HTTPException(status_code=400, detail="Material has no associated Drive file ID")
+    if not material.external_id and not material.file_content:
+        raise HTTPException(status_code=400, detail="Material has no associated Drive file or local content")
 
     token = _sign_pdf_token(material_id, current_user.id)
     return {"token": token, "expires_in": _PDF_TOKEN_TTL}
@@ -346,8 +347,8 @@ async def redirect_to_drive_preview(
     # Pure numeric IDs are Google Classroom assignment IDs — not embeddable via Drive viewer.
     is_drive_file = ext_id and not ext_id.isdigit() and len(ext_id) > 15
 
+    # Use local custom viewer for locally stored content (manual uploads or cached syncs)
     if material.file_content:
-        # We have the file locally!
         return {"url": f"{os.getenv('BACKEND_URL', 'http://localhost:8002')}/profile/proxy/drive/{material_id}/view?token={token}", "material_id": material_id, "type": "local"}
 
     # ON-DEMAND SYNC: If file is Drive-based but not local yet, attempt to download it now.
@@ -376,7 +377,8 @@ async def redirect_to_drive_preview(
                 material.mime_type = material.mime_type or "application/pdf"
                 await db.commit()
                 print(f"[Self-Heal] Successfully migrated {material_id} to local storage.")
-                return {"url": f"{os.getenv('BACKEND_URL', 'http://localhost:8002')}/profile/proxy/drive/{material_id}/view?token={token}", "material_id": material_id, "type": "local"}
+                if material.file_content:
+                    return {"url": f"{os.getenv('BACKEND_URL', 'http://localhost:8002')}/profile/proxy/drive/{material_id}/view?token={token}", "material_id": material_id, "type": "local"}
         except Exception as e:
             print(f"[Self-Heal] Failed on-demand ingestion: {e}")
 
@@ -453,8 +455,54 @@ async def redirect_to_drive(
 
     if is_drive_file:
         return {"url": f"https://drive.google.com/file/d/{ext_id}/view", "material_id": material_id, "type": "drive"}
-    elif material.source_link:
+    
+    if material.file_content:
+        # Local content: return the view URL. Note: caller might need to append ?token=
+        return {"url": f"{os.getenv('BACKEND_URL', 'http://localhost:8002')}/profile/proxy/drive/{material_id}/view", "material_id": material_id, "type": "local"}
+
+    if material.source_link:
         return {"url": material.source_link, "material_id": material_id, "type": "link"}
     else:
         raise HTTPException(status_code=404, detail="Material has no viewable Drive file or source link.")
 
+@router.delete("/materials/{material_id}")
+async def delete_material(
+    material_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Delete a material from the local DB and Supermemory."""
+    # 1. Find the material
+    stmt = select(Material).where(Material.id == material_id, Material.user_id == current_user.id)
+    res = await db.execute(stmt)
+    material = res.scalar_one_or_none()
+    
+    if not material:
+        raise HTTPException(status_code=404, detail="Material not found")
+        
+    # 2. Delete from Supermemory (if indexed)
+    # We search by material_id in metadata to find the docId
+    sm = get_sm_client()
+    try:
+        filters = {
+            "AND": [
+                {"key": "user_id", "value": current_user.email},
+                {"key": "material_id", "value": str(material_id)}
+            ]
+        }
+        # Search to find the doc ID
+        search_res = await sm.search(query="*", filters=filters, limit=20)
+        docs_to_delete = search_res.get("results", [])
+        for doc in docs_to_delete:
+            doc_id = doc.get("documentId")
+            if doc_id:
+                await sm.delete_document(doc_id)
+    except Exception as e:
+        # We don't block DB deletion if SM fails, but we log it
+        print(f"Error deleting from Supermemory during material removal: {e}")
+        
+    # 3. Delete from Local DB
+    await db.delete(material)
+    await db.commit()
+    
+    return {"status": "success", "message": "Material removed from Digital Twin"}

@@ -7,6 +7,12 @@ import { api } from "@/lib/api";
 import { ChevronDown, ChevronRight, Folder, FolderOpen, Pencil, Trash2, Plus } from "lucide-react";
 
 interface Thread { id: number; title: string; folder_name?: string; updated_at: string; }
+interface ThreadItemProps {
+  t: Thread;
+  pathname: string;
+  setShowProfile: (show: boolean) => void;
+  refreshThreads: () => void;
+}
 interface TreeNode {
   name: string;
   fullPath: string;
@@ -15,13 +21,12 @@ interface TreeNode {
 }
 
 const NAV_ITEMS = [
-  { href: "/chat", label: "Home", icon: "⌂" },
-  { href: "/chat/new", label: "New Chat", icon: "✦" },
-  { href: "/integrations", label: "My Courses", icon: "📚" },
-  { href: "/profile", label: "Digital Twin", icon: "🧠" },
+  { href: "/chat", label: "Home", icon: "" },
+  { href: "/chat/new", label: "New Chat", icon: "" },
+  { href: "/profile", label: "Digital Twin", icon: "" },
 ];
 
-function ThreadItem({ t, pathname, setShowProfile, refreshThreads }: any) {
+function ThreadItem({ t, pathname, setShowProfile, refreshThreads }: ThreadItemProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [title, setTitle] = useState(t.title);
   const [isHovered, setIsHovered] = useState(false);
@@ -68,7 +73,7 @@ function ThreadItem({ t, pathname, setShowProfile, refreshThreads }: any) {
       className={`sidebar-nav-item ${pathname === `/chat/${t.id}` ? "active" : ""}`}
       draggable={!isEditing}
       onDragStart={handleDragStart}
-      style={{ fontSize: 13, position: "relative", display: "flex", alignItems: "center", paddingRight: isHovered ? "50px" : "12px", transition: "padding 0.2s", cursor: isEditing ? "text" : "grab" }}
+      style={{ fontSize: 13, position: "relative", display: "flex", alignItems: "center", paddingRight: isHovered && !isEditing ? "110px" : "12px", transition: "padding 0.2s", cursor: isEditing ? "text" : "grab" }}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
@@ -77,7 +82,6 @@ function ThreadItem({ t, pathname, setShowProfile, refreshThreads }: any) {
         onClick={() => { if(!isEditing) setShowProfile(false) }}
         style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, textDecoration: "none", color: "inherit", overflow: "hidden" }}
       >
-        <span style={{ fontSize: 12, flexShrink: 0 }}>💬</span>
         {isEditing ? (
           <input 
             autoFocus
@@ -97,20 +101,20 @@ function ThreadItem({ t, pathname, setShowProfile, refreshThreads }: any) {
       </Link>
       
       {isHovered && !isEditing && (
-        <div style={{ position: "absolute", right: 8, display: "flex", gap: 2, background: pathname === `/chat/${t.id}` ? "var(--bg-secondary)" : "transparent" }}>
+        <div style={{ position: "absolute", right: 6, display: "flex", gap: 4, background: "var(--bg-secondary)", padding: "2px 4px", borderRadius: 6, boxShadow: "-8px 0 12px var(--bg-secondary)" }}>
           <button 
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); setIsEditing(true); }}
-            style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, padding: 4, opacity: 0.6 }}
+            style={{ background: "none", border: "none", cursor: "pointer", fontSize: 11, padding: "2px 6px", opacity: 0.6, border: "1px solid var(--border)", borderRadius: 4 }}
             title="Rename"
           >
-            ✏️
+            Rename
           </button>
           <button 
             onClick={handleDelete}
-            style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, padding: 4, opacity: 0.6 }}
+            style={{ background: "none", border: "none", cursor: "pointer", fontSize: 11, padding: "2px 6px", opacity: 0.6, border: "1px solid var(--border)", borderRadius: 4, color: "#ef4444" }}
             title="Delete"
           >
-            🗑️
+            Delete
           </button>
         </div>
       )}
@@ -345,16 +349,25 @@ export default function Sidebar({ collapsed, setCollapsed }: { collapsed: boolea
   };
 
   return (
-    <div className="sidebar" style={{ width: collapsed ? 64 : 260 }}>
+    <div className="sidebar" style={{ width: collapsed ? 64 : 284 }}>
       {/* Header */}
-      <div style={{ padding: collapsed ? "16px 12px" : "16px", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
+      <div style={{ 
+        padding: collapsed ? "16px 0" : "16px", 
+        display: "flex", 
+        flexDirection: collapsed ? "column" : "row",
+        alignItems: "center", 
+        justifyContent: collapsed ? "center" : "space-between", 
+        borderBottom: "1px solid var(--border)", 
+        flexShrink: 0,
+        gap: collapsed ? 12 : 0
+      }}>
         {!collapsed && (
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <div style={{ width: 32, height: 32, borderRadius: 9, background: "linear-gradient(135deg,#8b5cf6,#06b6d4)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>🧠</div>
-            <span style={{ fontWeight: 700, fontSize: 15, letterSpacing: "-0.01em" }} className="gradient-text">FIWB</span>
+            <div style={{ width: 32, height: 32, borderRadius: 11, background: "#000", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, fontFamily: "'Times New Roman', Times, serif", flexShrink: 0, fontWeight: 400, paddingRight: 1 }}>F</div>
+            <span style={{ fontWeight: 400, fontSize: 16, letterSpacing: "0.05em", fontFamily: "serif" }}>FIWB</span>
           </div>
         )}
-        {collapsed && <div style={{ width: 32, height: 32, borderRadius: 9, background: "linear-gradient(135deg,#8b5cf6,#06b6d4)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>🧠</div>}
+        {collapsed && <div style={{ width: 32, height: 32, borderRadius: 11, background: "#000", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, fontFamily: "'Times New Roman', Times, serif", flexShrink: 0, fontWeight: 400, paddingRight: 1 }}>F</div>}
         <button
           onClick={() => setCollapsed(!collapsed)}
           style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 14, padding: 4, borderRadius: 6, flexShrink: 0 }}
@@ -367,7 +380,17 @@ export default function Sidebar({ collapsed, setCollapsed }: { collapsed: boolea
       {/* User Avatar */}
       {user && (
         <div
-          style={{ padding: collapsed ? "12px 12px" : "12px 16px", display: "flex", alignItems: "center", gap: 10, cursor: "pointer", borderBottom: "1px solid var(--border)", flexShrink: 0, position: "relative" }}
+          style={{ 
+            padding: collapsed ? "12px 0" : "12px 16px", 
+            display: "flex", 
+            alignItems: "center", 
+            justifyContent: collapsed ? "center" : "flex-start",
+            gap: 10, 
+            cursor: "pointer", 
+            borderBottom: "1px solid var(--border)", 
+            flexShrink: 0, 
+            position: "relative" 
+          }}
           onClick={() => setShowProfile(!showProfile)}
         >
           <img src={user.picture || "/avatar.png"} alt={user.name} style={{ width: 32, height: 32, borderRadius: 99, border: "2px solid var(--border)", flexShrink: 0 }} />
@@ -384,10 +407,10 @@ export default function Sidebar({ collapsed, setCollapsed }: { collapsed: boolea
           {showProfile && !collapsed && (
             <div style={{ position: "absolute", top: "100%", left: 8, right: 8, zIndex: 100, background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 12, overflow: "hidden", boxShadow: "0 10px 25px rgba(0,0,0,0.08)" }}>
               <button onClick={() => router.push("/profile")} style={{ width: "100%", padding: "10px 14px", background: "none", border: "none", color: "var(--text-secondary)", cursor: "pointer", textAlign: "left", fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
-                🧠 Digital Twin
+                Digital Twin
               </button>
               <button onClick={() => { logout(); router.push("/"); }} style={{ width: "100%", padding: "10px 14px", background: "none", border: "none", color: "#f87171", cursor: "pointer", textAlign: "left", fontSize: 13, display: "flex", alignItems: "center", gap: 8, borderTop: "1px solid var(--border)" }}>
-                ↪ Log Out
+                Log Out
               </button>
             </div>
           )}
@@ -401,10 +424,14 @@ export default function Sidebar({ collapsed, setCollapsed }: { collapsed: boolea
             key={item.href}
             href={item.href}
             className={`sidebar-nav-item ${(pathname === item.href || (item.href !== "/chat" && pathname.startsWith(item.href))) ? "active" : ""}`}
+            style={{ 
+              justifyContent: collapsed ? "center" : "flex-start",
+              padding: collapsed ? "9px 0" : "9px 12px",
+              gap: collapsed ? 0 : 10
+            }}
             title={collapsed ? item.label : undefined}
             onClick={() => setShowProfile(false)}
           >
-            <span style={{ fontSize: 16, flexShrink: 0 }}>{item.icon}</span>
             {!collapsed && <span>{item.label}</span>}
           </Link>
         ))}
