@@ -36,12 +36,20 @@ async def fetch_mind_map(
     If `force=true`, clears cache and triggers fresh generation.
     Returns 404 if no cache and force=false (frontend should then POST to generate).
     """
-    # Verify material belongs to user
-    mat_res = await db.execute(
-        select(Material).where(Material.id == material_id, Material.user_id == current_user.id)
-    )
-    if not mat_res.scalar_one_or_none():
+    # Verify material belongs to user OR is from an enrolled course
+    from app.models.database import Enrollment
+    stmt = select(Material).where(Material.id == material_id)
+    mat_res = await db.execute(stmt)
+    material = mat_res.scalar_one_or_none()
+    
+    if not material:
         raise HTTPException(status_code=404, detail="Material not found")
+        
+    if material.user_id != current_user.id:
+        # Check enrollment
+        enr_res = await db.execute(select(Enrollment).where(Enrollment.student_id == current_user.id, Enrollment.course_id == material.course_id))
+        if not enr_res.scalar_one_or_none():
+            raise HTTPException(status_code=403, detail="Access denied: You are not enrolled in this course")
 
     if force:
         try:
@@ -67,11 +75,20 @@ async def create_mind_map(
     POST: Generate (or re-use cache) for a document.
     Used by the frontend after receiving `mind_map_action: open` from SSE.
     """
-    mat_res = await db.execute(
-        select(Material).where(Material.id == material_id, Material.user_id == current_user.id)
-    )
-    if not mat_res.scalar_one_or_none():
+    # Verify material belongs to user OR is from an enrolled course
+    from app.models.database import Enrollment
+    stmt = select(Material).where(Material.id == material_id)
+    mat_res = await db.execute(stmt)
+    material = mat_res.scalar_one_or_none()
+    
+    if not material:
         raise HTTPException(status_code=404, detail="Material not found")
+        
+    if material.user_id != current_user.id:
+        # Check enrollment
+        enr_res = await db.execute(select(Enrollment).where(Enrollment.student_id == current_user.id, Enrollment.course_id == material.course_id))
+        if not enr_res.scalar_one_or_none():
+            raise HTTPException(status_code=403, detail="Access denied: You are not enrolled in this course")
 
     # Try cache first (unless caller wants fresh)
     cached = await get_mind_map(db, current_user.id, material_id)

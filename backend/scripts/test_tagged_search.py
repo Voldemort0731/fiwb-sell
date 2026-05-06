@@ -5,7 +5,7 @@ import asyncio
 import os
 import sys
 import json
-from app.intelligence.sm_client import get_sm_client
+from app.intelligence.ms_client import get_ms_client
 
 # Force UTF-8 for windows stdout
 if sys.platform == 'win32':
@@ -13,7 +13,7 @@ if sys.platform == 'win32':
     sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
 
 async def test_tagged():
-    sm = get_sm_client()
+    sm = get_ms_client()
     tag = "user_1"
     query = "struct" # Broad keyword
     

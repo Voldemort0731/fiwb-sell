@@ -4,7 +4,7 @@ load_dotenv()
 import asyncio
 import os
 import sys
-from app.intelligence.sm_client import get_sm_client
+from app.intelligence.ms_client import get_ms_client
 
 # Force UTF-8 for windows stdout
 if sys.platform == 'win32':
@@ -12,9 +12,9 @@ if sys.platform == 'win32':
     sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
 
 async def search_item():
-    sm = get_sm_client()
+    sm = get_ms_client()
     query = "Lec-1"
-    print(f"--- Searching Supermemory for specific item: '{query}' ---")
+    print(f"--- Searching Memsapien for specific item: '{query}' ---")
     
     # Try with tag first
     res = await sm.search(query=query, limit=5, container_tag="user_1")

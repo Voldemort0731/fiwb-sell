@@ -19,7 +19,7 @@ from app.models.database import get_db, User, Course, Material
 from app.utils.dependencies import get_current_user
 from app.services.google_auth import build_credentials, refresh_credentials
 from app.services.drive_sync import DriveSyncService
-from app.intelligence.sm_client import get_sm_client
+from app.intelligence.ms_client import get_ms_client
 import io
 import base64
 
@@ -93,7 +93,7 @@ async def manual_upload(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Manually upload a document to both local DB and Supermemory."""
+    """Manually upload a document to both local DB and Memsapien."""
     # 1. Read file
     file_bytes = await file.read()
     filename = file.filename or "uploaded_file"
@@ -111,7 +111,7 @@ async def manual_upload(
         source="manual_upload",
         file_content=file_bytes,
         mime_type=mime_type,
-        indexed_in_supermemory=False,
+        indexed_in_memsapien=False,
         content_preview=preview,
         full_text=content if content else None,
         source_link=f"{os.getenv('BACKEND_URL', 'http://localhost:8002')}/profile/proxy/drive/0"
@@ -125,9 +125,9 @@ async def manual_upload(
     new_mat.source_link = f"{backend_url}/profile/proxy/drive/{new_mat.id}"
     await db.commit()
     
-    # 4. Index in Supermemory
+    # 4. Index in Memsapien
     try:
-        sm = get_sm_client()
+        sm = get_ms_client()
         sm_id = await sm.add_document(
             content=f"User Uploaded Document: {filename}\n\n{content or 'Binary file content'}",
             metadata={
@@ -142,12 +142,12 @@ async def manual_upload(
             container_tag=f"user_{current_user.id}"
         )
         if sm_id:
-            new_mat.indexed_in_supermemory = True
+            new_mat.indexed_in_memsapien = True
             await db.commit()
     except Exception as e:
         logger.error(f"Failed to index manual upload in SM: {e}")
         
-    return {"id": new_mat.id, "title": filename, "indexed": new_mat.indexed_in_supermemory}
+    return {"id": new_mat.id, "title": filename, "indexed": new_mat.indexed_in_memsapien}
 
 
 
@@ -326,7 +326,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                 source="classroom", external_id=cw["id"],
                                 content_preview=desc[:500],
                                 full_text=desc,
-                                indexed_in_supermemory=False,
+                                indexed_in_memsapien=False,
                                 source_link=cw_link,
                                 attachments=json.dumps(cw_attachments),
                             )
@@ -335,8 +335,8 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                             await db.refresh(mat_for_index)
 
                         # 2. Index assignment metadata with material_id
-                        if not mat_for_index.indexed_in_supermemory:
-                            sm_id = await get_sm_client().add_document(
+                        if not mat_for_index.indexed_in_memsapien:
+                            sm_id = await get_ms_client().add_document(
                                 content=doc, 
                                 metadata={
                                     "source": "classroom", 
@@ -348,10 +348,10 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                 }, 
                                 user_email=email, 
                                 title=title,
-                                container_tag=f"user_{user_id}"
+                                container_tag=f"course_{course.id}"
                             )
                             if sm_id:
-                                mat_for_index.indexed_in_supermemory = True
+                                mat_for_index.indexed_in_memsapien = True
                                 await db.commit()
                         
                         # 2. Deep Index Attachments & Embedded Links
@@ -373,7 +373,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                 # EARLY DEDUPLICATION
                                 dup_check = await db.execute(select(Material).where(Material.external_id == fid, Material.user_id == user_id))
                                 existing = dup_check.scalars().first()
-                                if existing and existing.indexed_in_supermemory:
+                                if existing and existing.indexed_in_memsapien:
                                     print(f"     ✅ [Skip] Embedded file {fid} already synced & indexed")
                                     continue
 
@@ -389,7 +389,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                         content_preview=content[:500] if content else None,
                                         full_text=content,
                                         file_content=raw_bytes,
-                                        indexed_in_supermemory=True, # Will commit below
+                                        indexed_in_memsapien=True, # Will commit below
                                         source_link=f"{os.getenv('BACKEND_URL', 'http://localhost:8002')}/profile/proxy/drive/0"
                                     )
                                     db.add(new_mat)
@@ -402,7 +402,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
 
                                     # Push to SM with correct link
                                     att_doc = f"Course: {course.name}\nSource Assignment: {title}\nFile Content:\n{content}"
-                                    await get_sm_client().add_document(
+                                    await get_ms_client().add_document(
                                         att_doc, 
                                         metadata={
                                             "source": "classroom", 
@@ -413,7 +413,8 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                             "source_link": new_mat.source_link
                                         }, 
                                         user_email=email, 
-                                        title=f"Linked File ({fid[:8]})"
+                                        title=f"Linked File ({fid[:8]})",
+                                        container_tag=f"course_{course.id}"
                                     )
 
                         # B. Formal attachments
@@ -425,7 +426,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                 # DEDUPLICATION: skip if indexed, upsert if exists but not indexed
                                 dup_check = await db.execute(select(Material).where(Material.external_id == df['id'], Material.user_id == user_id))
                                 existing = dup_check.scalars().first()
-                                if existing and existing.indexed_in_supermemory:
+                                if existing and existing.indexed_in_memsapien:
                                     print(f"     ✅ [Skip] Formal attachment {df['id']} already synced & indexed")
                                     cw_processed_ids.add(df['id'])
                                     continue
@@ -451,7 +452,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                         full_text=content if content else None,
                                         file_content=raw_bytes,
                                         mime_type=df.get('mimeType'),
-                                        indexed_in_supermemory=False,
+                                        indexed_in_memsapien=False,
                                         source_link=f"{backend_url}/profile/proxy/drive/0"
                                     )
                                     db.add(mat_to_index)
@@ -461,7 +462,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                     await db.commit()
 
                                 sm_content = f"Course: {course.name}\nSource Assignment: {title}\nFile: {df['title']}\n\n{content}" if content else f"Course: {course.name}\nSource Assignment: {title}\nFile attachment: {df['title']}\nType: {df.get('mimeType', 'unknown')}"
-                                await get_sm_client().add_document(
+                                await get_ms_client().add_document(
                                     sm_content,
                                     metadata={
                                         "source": "classroom",
@@ -472,9 +473,10 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                         "source_link": mat_to_index.source_link
                                     },
                                     user_email=email,
-                                    title=f"Attachment: {df['title']}"
+                                    title=f"Attachment: {df['title']}",
+                                    container_tag=f"course_{course.id}"
                                 )
-                                mat_to_index.indexed_in_supermemory = True
+                                mat_to_index.indexed_in_memsapien = True
                                 await db.commit()
                                 cw_processed_ids.add(df['id'])
                             elif 'link' in mat_ref:
@@ -484,10 +486,11 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                 if not link_url or link_url in cw_processed_ids: continue
                                 print(f"     🔗 [Link] Found in assignment: {link_title}")
                                 # Index to SM only — links are not stored in local DB
-                                await get_sm_client().add_document(
+                                await get_ms_client().add_document(
                                     f"Course: {course.name}\nAssignment: {title}\nLinked resource: {link_title}\nURL: {link_url}",
                                     metadata={"source": "classroom", "type": "academic_material", "course": course.name, "user_id": email, "source_link": link_url},
-                                    user_email=email, title=f"Link: {link_title}"
+                                    user_email=email, title=f"Link: {link_title}",
+                                    container_tag=f"course_{course.id}"
                                 )
                                 cw_processed_ids.add(link_url)
                             elif 'youtubeVideo' in mat_ref:
@@ -503,17 +506,18 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                     parent_external_id=cw["id"],
                                     content_preview=f"YouTube video: {yt_title}",
                                     source_link=yt_url,
-                                    indexed_in_supermemory=False,
+                                    indexed_in_memsapien=False,
                                 )
                                 db.add(new_mat)
                                 await db.commit()
                                 await db.refresh(new_mat)
-                                await get_sm_client().add_document(
+                                await get_ms_client().add_document(
                                     f"Course: {course.name}\nAssignment: {title}\nYouTube video: {yt_title}\nURL: {yt_url}",
                                     metadata={"source": "classroom", "type": "academic_material", "course": course.name, "user_id": email, "source_link": yt_url},
-                                    user_email=email, title=f"Video: {yt_title}"
+                                    user_email=email, title=f"Video: {yt_title}",
+                                    container_tag=f"course_{course.id}"
                                 )
-                                new_mat.indexed_in_supermemory = True
+                                new_mat.indexed_in_memsapien = True
                                 await db.commit()
                                 cw_processed_ids.add(yt_url)
 
@@ -537,7 +541,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                 source="classroom", external_id=cw["id"],
                                 content_preview=desc[:500],
                                 full_text=desc,
-                                indexed_in_supermemory=bool(sm_id),
+                                indexed_in_memsapien=bool(sm_id),
                                 source_link=cw_alternate_link,
                                 attachments=json.dumps(cw_attachments),
                             ))
@@ -587,7 +591,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                 source="classroom", external_id=ann_id_raw,
                                 content_preview=text[:500],
                                 full_text=text,
-                                indexed_in_supermemory=False,
+                                indexed_in_memsapien=False,
                                 source_link=ann_link,
                                 attachments=json.dumps(ann_attachments),
                                 created_at=datetime.fromisoformat(ann.get("updateTime", ann.get("creationTime")).replace("Z", "+00:00")) if ann.get("creationTime") else datetime.now(timezone.utc),
@@ -597,8 +601,8 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                             await db.refresh(ann_mat)
 
                         # 2. Index the announcement text with material_id
-                        if not ann_mat.indexed_in_supermemory:
-                            sm_id = await get_sm_client().add_document(
+                        if not ann_mat.indexed_in_memsapien:
+                            sm_id = await get_ms_client().add_document(
                                 doc, 
                                 metadata={
                                     "source": "classroom", 
@@ -609,10 +613,11 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                     "source_link": ann_link
                                 }, 
                                 user_email=email, 
-                                title=f"Announcement: {course.name}"
+                                title=f"Announcement: {course.name}",
+                                container_tag=f"course_{course.id}"
                             )
                             if sm_id:
-                                ann_mat.indexed_in_supermemory = True
+                                ann_mat.indexed_in_memsapien = True
                                 await db.commit()
                         # 2. Deep Index attachments & Embedded Links
                         processed_file_ids = set()
@@ -627,7 +632,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                 # EARLY DEDUPLICATION
                                 dup_check = await db.execute(select(Material).where(Material.external_id == fid, Material.user_id == user_id))
                                 existing = dup_check.scalars().first()
-                                if existing and existing.indexed_in_supermemory:
+                                if existing and existing.indexed_in_memsapien:
                                     print(f"     ✅ [Skip] Announcement link {fid} already synced & indexed")
                                     processed_file_ids.add(fid)
                                     continue
@@ -644,7 +649,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                         content_preview=content[:500] if content else None,
                                         full_text=content,
                                         file_content=raw_bytes,
-                                        indexed_in_supermemory=True, # Will commit below
+                                        indexed_in_memsapien=True, # Will commit below
                                         source_link=f"{os.getenv('BACKEND_URL', 'http://localhost:8002')}/profile/proxy/drive/0"
                                     )
                                     db.add(new_mat)
@@ -657,7 +662,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
 
                                     # Push to SM
                                     att_doc = f"Course: {course.name}\nSource Announcement: {text[:200]}\nFile Content:\n{content}"
-                                    await get_sm_client().add_document(
+                                    await get_ms_client().add_document(
                                         att_doc, 
                                         metadata={
                                             "source": "classroom", 
@@ -668,9 +673,9 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                             "material_id": str(new_mat.id),
                                             "source_link": new_mat.source_link
                                         }, 
-                                        user_email=email, 
+                                        user_email=email,
                                         title=f"Drive Link in Announcement",
-                                        container_tag=f"user_{user_id}"
+                                        container_tag=f"course_{course.id}"
                                     )
                                     processed_file_ids.add(fid)
 
@@ -683,7 +688,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                 # DEDUPLICATION: skip if indexed, upsert if exists but not indexed
                                 dup_check = await db.execute(select(Material).where(Material.external_id == df['id'], Material.user_id == user_id))
                                 existing = dup_check.scalars().first()
-                                if existing and existing.indexed_in_supermemory:
+                                if existing and existing.indexed_in_memsapien:
                                     print(f"     ✅ [Skip] Announcement attachment {df['id']} already synced & indexed")
                                     processed_file_ids.add(df['id'])
                                     continue
@@ -709,7 +714,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                         full_text=content if content else None,
                                         file_content=raw_bytes,
                                         mime_type=df.get('mimeType'),
-                                        indexed_in_supermemory=False,
+                                        indexed_in_memsapien=False,
                                         source_link=f"{backend_url}/profile/proxy/drive/0"
                                     )
                                     db.add(mat_to_index)
@@ -719,7 +724,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                     await db.commit()
 
                                 sm_content = f"Course: {course.name}\nSource Announcement: {text[:100]}\nFile: {df['title']}\n\n{content}" if content else f"Course: {course.name}\nSource Announcement: {text[:100]}\nFile attachment: {df['title']}\nType: {df.get('mimeType', 'unknown')}"
-                                await get_sm_client().add_document(
+                                await get_ms_client().add_document(
                                     sm_content,
                                     metadata={
                                         "source": "classroom",
@@ -734,7 +739,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                     title=f"Attachment: {df['title']}",
                                     container_tag=f"user_{user_id}"
                                 )
-                                mat_to_index.indexed_in_supermemory = True
+                                mat_to_index.indexed_in_memsapien = True
                                 await db.commit()
                                 processed_file_ids.add(df['id'])
                             elif 'link' in mat_ref:
@@ -744,7 +749,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                 if not link_url or link_url in processed_file_ids: continue
                                 print(f"     🔗 [Link] Found in announcement: {link_title}")
                                 # Index to SM only — links are not stored in local DB
-                                await get_sm_client().add_document(
+                                await get_ms_client().add_document(
                                     f"Course: {course.name}\nAnnouncement: {text[:100]}\nLinked resource: {link_title}\nURL: {link_url}",
                                     metadata={"source": "classroom", "type": "academic_material", "course": course.name, "user_id": email, "source_link": link_url},
                                     user_email=email, title=f"Link: {link_title}", container_tag=f"user_{user_id}"
@@ -763,17 +768,17 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                     parent_external_id=ann["id"],
                                     content_preview=f"YouTube video: {yt_title}",
                                     source_link=yt_url,
-                                    indexed_in_supermemory=False,
+                                    indexed_in_memsapien=False,
                                 )
                                 db.add(new_mat)
                                 await db.commit()
                                 await db.refresh(new_mat)
-                                await get_sm_client().add_document(
+                                await get_ms_client().add_document(
                                     f"Course: {course.name}\nAnnouncement: {text[:100]}\nYouTube video: {yt_title}\nURL: {yt_url}",
                                     metadata={"source": "classroom", "type": "academic_material", "course": course.name, "user_id": email, "source_link": yt_url},
                                     user_email=email, title=f"Video: {yt_title}", container_tag=f"user_{user_id}"
                                 )
-                                new_mat.indexed_in_supermemory = True
+                                new_mat.indexed_in_memsapien = True
                                 await db.commit()
                                 processed_file_ids.add(yt_url)
                         
@@ -824,7 +829,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                 source="classroom", external_id=cm_id_raw,
                                 content_preview=desc[:500],
                                 full_text=desc,
-                                indexed_in_supermemory=False,
+                                indexed_in_memsapien=False,
                                 source_link=cm_link,
                                 attachments=json.dumps(cm_attachments),
                             )
@@ -833,8 +838,8 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                             await db.refresh(cm_mat)
 
                         # 2. Index the resource metadata with material_id
-                        if not cm_mat.indexed_in_supermemory:
-                            sm_id = await get_sm_client().add_document(
+                        if not cm_mat.indexed_in_memsapien:
+                            sm_id = await get_ms_client().add_document(
                                 doc, 
                                 metadata={
                                     "source": "classroom", 
@@ -848,7 +853,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                 title=title
                             )
                             if sm_id:
-                                cm_mat.indexed_in_supermemory = True
+                                cm_mat.indexed_in_memsapien = True
                                 await db.commit()
 
                         # 3. Deep Index attachments & Embedded Links
@@ -861,7 +866,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                 # EARLY DEDUPLICATION
                                 dup_check = await db.execute(select(Material).where(Material.external_id == fid, Material.user_id == user_id))
                                 existing = dup_check.scalars().first()
-                                if existing and existing.indexed_in_supermemory:
+                                if existing and existing.indexed_in_memsapien:
                                     print(f"     ✅ [Skip] Resource link {fid} already synced & indexed")
                                     resource_processed_ids.add(fid)
                                     continue
@@ -878,7 +883,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                         content_preview=content[:500] if content else None,
                                         full_text=content,
                                         file_content=raw_bytes,
-                                        indexed_in_supermemory=True, # Will commit below
+                                        indexed_in_memsapien=True, # Will commit below
                                         source_link=f"{os.getenv('BACKEND_URL', 'http://localhost:8002')}/profile/proxy/drive/0"
                                     )
                                     db.add(new_mat)
@@ -891,7 +896,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
 
                                     # Push to SM
                                     att_doc = f"Course: {course.name}\nSource Resource: {title}\nFile Content:\n{content}"
-                                    await get_sm_client().add_document(
+                                    await get_ms_client().add_document(
                                         att_doc, 
                                         metadata={
                                             "source": "classroom", 
@@ -917,7 +922,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                 # DEDUPLICATION: skip if indexed, upsert if exists but not indexed
                                 dup_check = await db.execute(select(Material).where(Material.external_id == df['id'], Material.user_id == user_id))
                                 existing = dup_check.scalars().first()
-                                if existing and existing.indexed_in_supermemory:
+                                if existing and existing.indexed_in_memsapien:
                                     print(f"     ✅ [Skip] Resource attachment {df['id']} already synced & indexed")
                                     resource_processed_ids.add(df['id'])
                                     continue
@@ -943,7 +948,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                         full_text=content if content else None,
                                         file_content=raw_bytes,
                                         mime_type=df.get('mimeType'),
-                                        indexed_in_supermemory=False,
+                                        indexed_in_memsapien=False,
                                         source_link=f"{backend_url}/profile/proxy/drive/0"
                                     )
                                     db.add(mat_to_index)
@@ -953,7 +958,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                     await db.commit()
 
                                 sm_content = f"Course: {course.name}\nSource Resource: {title}\nFile: {df['title']}\n\n{content}" if content else f"Course: {course.name}\nSource Resource: {title}\nFile attachment: {df['title']}\nType: {df.get('mimeType', 'unknown')}"
-                                await get_sm_client().add_document(
+                                await get_ms_client().add_document(
                                     sm_content,
                                     metadata={
                                         "source": "classroom",
@@ -968,7 +973,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                     title=f"Attachment: {df['title']}",
                                     container_tag=f"user_{user_id}"
                                 )
-                                mat_to_index.indexed_in_supermemory = True
+                                mat_to_index.indexed_in_memsapien = True
                                 await db.commit()
                                 resource_processed_ids.add(df['id'])
                             elif 'link' in mat_ref:
@@ -978,7 +983,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                 if not link_url or link_url in resource_processed_ids: continue
                                 print(f"     🔗 [Link] Found in resource: {link_title}")
                                 # Index to SM only — links are not stored in local DB
-                                await get_sm_client().add_document(
+                                await get_ms_client().add_document(
                                     f"Course: {course.name}\nResource: {title}\nLinked resource: {link_title}\nURL: {link_url}",
                                     metadata={"source": "classroom", "type": "academic_material", "course": course.name, "user_id": email, "source_link": link_url},
                                     user_email=email, title=f"Link: {link_title}", container_tag=f"user_{user_id}"
@@ -997,11 +1002,11 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                     parent_external_id=cm["id"],
                                     content_preview=f"YouTube video: {yt_title}",
                                     source_link=yt_url,
-                                    indexed_in_supermemory=False,
+                                    indexed_in_memsapien=False,
                                 )
                                 db.add(new_mat)
                                 await db.commit()
-                                await get_sm_client().add_document(
+                                await get_ms_client().add_document(
                                     f"Course: {course.name}\nResource: {title}\nYouTube video: {yt_title}\nURL: {yt_url}",
                                     metadata={
                                         "source": "classroom", 
@@ -1013,7 +1018,7 @@ async def _do_classroom_sync(user_id: int, email: str, creds):
                                     },
                                     user_email=email, title=f"Video: {yt_title}", container_tag=f"user_{user_id}"
                                 )
-                                new_mat.indexed_in_supermemory = True
+                                new_mat.indexed_in_memsapien = True
                                 await db.commit()
                                 resource_processed_ids.add(yt_url)
                         
@@ -1065,13 +1070,11 @@ async def _get_drive_file_content(service, file_id: str, mime_type: str = "") ->
                             text_runs.append(shape.text)
                 return "\n".join(text_runs)[:15000], raw_bytes
             elif mime_type.startswith("image/"):
-                # Vision OCR using GPT-4o
+                # Vision OCR using gpt-4o-mini
                 try:
                     b64 = base64.b64encode(raw_bytes).decode("utf-8")
-                    from app.services.openai_service import get_client
-                    client = get_client()
-                    resp = await client.chat.completions.create(
-                        model="gpt-4o",
+                    from app.services.openai_service import unified_completion
+                    resp = await unified_completion(
                         messages=[
                             {
                                 "role": "user",
@@ -1081,10 +1084,9 @@ async def _get_drive_file_content(service, file_id: str, mime_type: str = "") ->
                                 ]
                             }
                         ],
-                        max_tokens=1000,
+                        tier="flash"
                     )
-                    vision_text = resp.choices[0].message.content
-                    return vision_text[:15000], raw_bytes
+                    return resp["text"][:15000], raw_bytes
                 except Exception as ve:
                     logger.error(f"Vision OCR error: {ve}")
                     return "[Image content could not be processed]", raw_bytes

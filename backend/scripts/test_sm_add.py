@@ -3,14 +3,14 @@ import os
 import sys
 from dotenv import load_dotenv
 load_dotenv()
-from app.intelligence.sm_client import get_sm_client
+from app.intelligence.ms_client import get_ms_client
 
 if sys.platform == 'win32':
     import codecs
     sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
 
 async def run():
-    sm = get_sm_client()
+    sm = get_ms_client()
     print("--- Adding Test Document WITHOUT container_tag ---")
     res = await sm.add_document('test content no tag', {'type': 'academic_material'}, 'test@test.com', 'Test No Tag Doc')
     print('Add Response:', res)

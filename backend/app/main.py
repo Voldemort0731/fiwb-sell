@@ -11,14 +11,14 @@ load_dotenv()
 
 from sqlalchemy import delete, and_, func, select
 from app.models.database import init_db, AsyncSessionLocal, Material
-from app.routers import auth, chat, integrations, profile, mindmap
+from app.routers import auth, chat, integrations, profile, mindmap, professor
 
 
 async def _cleanup_stale_link_records():
     """
     One-time cleanup:
     1. Delete all Link: records stored in local DB (source=classroom, external_id IS NULL,
-       title starts with 'Link: ') — these should only live in Supermemory.
+       title starts with 'Link: ') — these should only live in Memsapien.
     2. Remove duplicate attachment rows, keeping the one with the highest id per
        (user_id, external_id) pair so only one card shows per file.
     """
@@ -89,6 +89,7 @@ app.include_router(chat.router, prefix="/chat", tags=["chat"])
 app.include_router(integrations.router, prefix="/integrations", tags=["integrations"])
 app.include_router(profile.router, prefix="/profile", tags=["profile"])
 app.include_router(mindmap.router, tags=["mindmap"])
+app.include_router(professor.router)
 
 
 @app.get("/health")

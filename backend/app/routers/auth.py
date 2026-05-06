@@ -4,6 +4,7 @@ Auth Router — Google OAuth 2.0 login flow
 import os
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from fastapi.responses import RedirectResponse, JSONResponse
+from typing import Optional, List
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.models.database import get_db, User
@@ -81,7 +82,9 @@ async def login(
             "id": user.id,
             "email": user.email,
             "name": user.name,
-            "picture": user.picture
+            "picture": user.picture,
+            "role": user.role,
+            "role_finalized": user.role_finalized
         }
     }
 
@@ -99,6 +102,8 @@ async def get_me(current_user: User = Depends(get_current_user)):
         "email": current_user.email,
         "name": current_user.name,
         "picture": current_user.picture,
+        "role": current_user.role,
+        "role_finalized": current_user.role_finalized,
         "classroom_synced": current_user.classroom_synced,
         "drive_synced": current_user.drive_synced,
         "gmail_synced": current_user.gmail_synced,
@@ -109,3 +114,27 @@ async def get_me(current_user: User = Depends(get_current_user)):
             "total_cost_usd": round(current_user.total_cost_usd, 6),
         },
     }
+
+class RoleFinalizeRequest(BaseModel):
+    role: str # "student" or "professor"
+    password: Optional[str] = None
+
+@router.post("/finalize-role")
+async def finalize_role(
+    request: RoleFinalizeRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Finalize user role during onboarding."""
+    if request.role not in ["student", "professor"]:
+        raise HTTPException(status_code=400, detail="Invalid role")
+
+    if request.role == "professor":
+        if request.password != "-9876":
+            raise HTTPException(status_code=403, detail="Incorrect password for Professor role")
+    
+    current_user.role = request.role
+    current_user.role_finalized = True
+    await db.commit()
+    
+    return {"status": "success", "role": current_user.role}

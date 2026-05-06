@@ -20,12 +20,6 @@ interface TreeNode {
   threads: Thread[];
 }
 
-const NAV_ITEMS = [
-  { href: "/chat", label: "Home", icon: "" },
-  { href: "/chat/new", label: "New Chat", icon: "" },
-  { href: "/profile", label: "Digital Twin", icon: "" },
-];
-
 function ThreadItem({ t, pathname, setShowProfile, refreshThreads }: ThreadItemProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [title, setTitle] = useState(t.title);
@@ -126,6 +120,23 @@ export default function Sidebar({ collapsed, setCollapsed }: { collapsed: boolea
   const pathname = usePathname();
   const router = useRouter();
   const { user, logout } = useAuthStore();
+
+  const NAV_ITEMS = user?.role === "professor" 
+    ? [
+        { href: "/professor", label: "Professor Portal" },
+        { href: "/professor/courses", label: "My Courses" },
+        { href: "/professor/analytics", label: "Institutional Analytics" },
+        { href: "/professor/assessment/build", label: "Assessment Builder" },
+      ]
+    : [
+        { href: "/chat", label: "Home" },
+        { href: "/chat/new", label: "New Chat" },
+        { href: "/dashboard/courses", label: "My Courses" },
+        { href: "/dashboard/progress", label: "Mastery Dashboard" },
+        { href: "/dashboard/assignments", label: "Assignments" },
+        { href: "/profile", label: "Digital Twin" },
+      ];
+
   const [threads, setThreads] = useState<Thread[]>([]);
   const [showProfile, setShowProfile] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
@@ -398,7 +409,9 @@ export default function Sidebar({ collapsed, setCollapsed }: { collapsed: boolea
             <>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <p style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user.name}</p>
-                <p style={{ fontSize: 11, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user.email}</p>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <p style={{ fontSize: 11, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user.email}</p>
+                </div>
               </div>
               <span style={{ fontSize: 10, color: "var(--text-muted)" }}>▼</span>
             </>

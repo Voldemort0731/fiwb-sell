@@ -1,151 +1,79 @@
 """
-LLM Service — Multi-tier Intelligence using Gemini 1.5 Pro & Flash.
-Switched from OpenAI to Gemini as per user request.
+LLM Service — Universal Intelligence Orchestrator.
+Standardized using LiteLLM to support Gemini, OpenAI, and Anthropic.
 """
 import os
 import json
-import httpx
 import logging
 import asyncio
 from typing import AsyncGenerator, Optional, List, Dict
+import litellm
+from litellm import acompletion
+from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini")# Pricing is handled differently for Gemini (free tier vs pay-as-you-go)
-# We'll set symbolic costs for now or just zero them out if not tracking.
-PRICING = {
-    "gemini-flash-latest": {"input": 0.000075, "output": 0.0003},
-}
+_openai_client: AsyncOpenAI = None
 
-async def _prepare_gemini_payload(messages: List[Dict], json_mode: bool = False) -> Dict:
-    """Helper to transform OpenAI messages to Gemini contents/system_instruction."""
-    contents = []
-    system_instruction = None
+def get_openai_client() -> AsyncOpenAI:
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    return _openai_client
+
+# Configuration
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").lower()
+
+def get_model_name(tier: str = "flash") -> str:
+    """
+    Maps symbolic tiers to provider-specific model strings.
+    Tiers: "flash" (fast, cheap), "pro" (smart, expensive).
+    """
+    if LLM_PROVIDER == "openai":
+        return "gpt-4o-mini" # Best value: gpt-4o-mini for everything
+    elif LLM_PROVIDER == "anthropic":
+        return "anthropic/claude-3-haiku-20240307" if tier == "flash" else "anthropic/claude-3-5-sonnet-20240620"
+    else: # Default to Gemini
+        return "gemini/gemini-1.5-flash" if tier == "flash" else "gemini/gemini-1.5-pro"
+
+async def unified_completion(
+    messages: List[Dict], 
+    model: Optional[str] = None,
+    tier: str = "flash",
+    json_mode: bool = False,
+    retries: int = 2
+) -> Dict:
+    """Universal completion helper using LiteLLM."""
+    target_model = model or get_model_name(tier)
     
-    current_role = None
-    current_parts = []
+    kwargs = {
+        "model": target_model,
+        "messages": messages,
+        "num_retries": retries,
+    }
     
-    for m in messages:
-        role = m.get("role")
-        raw_content = m.get("content", "")
-        
-        # 1. Handle System Messages
-        if role == "system":
-            # Gemini only supports string parts in system_instruction
-            if isinstance(raw_content, list):
-                text_parts = [p.get("text", "") for p in raw_content if p.get("type") == "text"]
-                system_instruction = {"parts": [{"text": " ".join(text_parts)}]}
-            else:
-                system_instruction = {"parts": [{"text": str(raw_content)}]}
-            continue
-
-        # 2. Extract Parts (Handle String or List)
-        g_parts = []
-        if isinstance(raw_content, list):
-            for part in raw_content:
-                if part.get("type") == "text":
-                    g_parts.append({"text": part.get("text", "")})
-                elif part.get("type") == "image_url":
-                    url = part.get("image_url", {}).get("url", "")
-                    if url.startswith("data:"):
-                        try:
-                            # data:image/jpeg;base64,/9j/...
-                            header, data = url.split(",", 1)
-                            mime_type = header.split(";")[0].split(":")[1]
-                            g_parts.append({
-                                "inline_data": {
-                                    "mime_type": mime_type,
-                                    "data": data
-                                }
-                            })
-                        except Exception as e:
-                            logger.error(f"Failed to parse image data: {e}")
-        else:
-            if str(raw_content).strip():
-                g_parts.append({"text": str(raw_content)})
-
-        if not g_parts: continue
-
-        # 3. Group consecutive roles
-        g_role = "user" if role == "user" else "model"
-        if g_role == current_role:
-            current_parts.extend(g_parts)
-        else:
-            if current_role:
-                contents.append({"role": current_role, "parts": current_parts})
-            current_role = g_role
-            current_parts = g_parts
-                
-    if current_role:
-        contents.append({"role": current_role, "parts": current_parts})
-        
-    if not contents:
-        contents = [{"role": "user", "parts": [{"text": "Hello"}]}]
-    elif contents[0]["role"] == "model":
-        contents.insert(0, {"role": "user", "parts": [{"text": "Please continue."}]})
-
-    payload = {"contents": contents}
-    if system_instruction:
-        payload["system_instruction"] = system_instruction
     if json_mode:
-        payload["generationConfig"] = {"response_mime_type": "application/json"}
-    
-    return payload
+        # LiteLLM handles json_mode for most providers
+        kwargs["response_format"] = {"type": "json_object"}
 
-async def call_gemini(model: str, messages: List[Dict], json_mode: bool = False, retries: int = 2) -> Dict:
-    """Helper to call Gemini API via HTTPX with retry logic."""
-    key = os.getenv("GEMINI_API_KEY", "").strip()
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-    payload = await _prepare_gemini_payload(messages, json_mode)
+    try:
+        response = await acompletion(**kwargs)
         
-    for attempt in range(retries + 1):
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(url, json=payload)
-            if resp.status_code == 429:
-                if attempt < retries:
-                    wait_time = (attempt + 1) * 2
-                    logger.warning(f"Gemini 429 hit. Retrying in {wait_time}s... (Attempt {attempt + 1}/{retries})")
-                    await asyncio.sleep(wait_time)
-                    continue
-                
-                retry_after = resp.headers.get("Retry-After")
-                wait_msg = f" (Wait {retry_after}s)" if retry_after else ""
-                logger.error(f"Gemini Rate Limit Hit: 429{wait_msg}")
-                raise ValueError(f"Rate limit exceeded. Please wait a moment before trying again.{wait_msg}")
-                
-            if resp.status_code != 200:
-                logger.error(f"Gemini error {resp.status_code}: {resp.text}")
-                resp.raise_for_status()
-                
-            data = resp.json()
-            try:
-                text = data["candidates"][0]["content"]["parts"][0]["text"]
-                usage = data.get("usageMetadata", {})
-                return {
-                    "text": text,
-                    "input_tokens": usage.get("promptTokenCount", 0),
-                    "output_tokens": usage.get("candidatesTokenCount", 0)
-                }
-            except (KeyError, IndexError) as e:
-                logger.error(f"Gemini response parsing failed: {e} | Raw: {data}")
-                raise ValueError("Unexpected Gemini response format")
-            
-        data = resp.json()
-        try:
-            text = data["candidates"][0]["content"]["parts"][0]["text"]
-            usage = data.get("usageMetadata", {})
-            return {
-                "text": text,
-                "input_tokens": usage.get("promptTokenCount", 0),
-                "output_tokens": usage.get("candidatesTokenCount", 0)
-            }
-        except (KeyError, IndexError) as e:
-            logger.error(f"Gemini response parsing failed: {e} | Raw: {data}")
-            raise ValueError("Unexpected Gemini response format")
+        # Standardize output format
+        text = response.choices[0].message.content
+        usage = getattr(response, "usage", {})
+        
+        return {
+            "text": text,
+            "input_tokens": getattr(usage, "prompt_tokens", 0),
+            "output_tokens": getattr(usage, "completion_tokens", 0)
+        }
+    except Exception as e:
+        logger.error(f"LLM Call Failed ({target_model}): {e}")
+        raise ValueError(f"LLM Service Error: {str(e)}")
 
 async def triage_query(query: str, history: list[dict]) -> dict:
-    """SLM Tier: Gemini Flash - Classifies query intent."""
+    """SLM Tier: Classifies query intent."""
     system = """You are a query classifier for an academic AI assistant.
 Return JSON with two keys:
 - intent: "academic" if the query relates to coursework, assignments, concepts, study materials, or anything school/academic-related; otherwise "general"
@@ -157,7 +85,7 @@ Only return valid JSON, no extra text."""
     messages = [{"role": "system", "content": system}] + recent + [{"role": "user", "content": query}]
 
     try:
-        res = await call_gemini("gemini-flash-latest", messages, json_mode=True)
+        res = await unified_completion(messages, tier="flash", json_mode=True)
         result = json.loads(res["text"])
         return {**result, "tokens": res["input_tokens"] + res["output_tokens"], "cost": 0}
     except Exception as e:
@@ -165,7 +93,7 @@ Only return valid JSON, no extra text."""
         return {"intent": "academic", "rewritten_query": query, "tokens": 0, "cost": 0}
 
 async def synthesize_memory(user_message: str, ai_response: str, user_email: str) -> Optional[str]:
-    """SLM Tier: Gemini Flash - Extracts learning insights."""
+    """SLM Tier: Extracts learning insights for the Digital Twin."""
     system = """You are a Neural Academic Intelligence analyzer for the student's Digital Twin.
 Return a beautifully formatted markdown document with these sections:
 ## 🎯 Conceptual Milestone: [Specific Topic]
@@ -177,142 +105,120 @@ Return a beautifully formatted markdown document with these sections:
         {"role": "user", "content": f"Student asked:\n{user_message}\n\nAI responded:\n{ai_response}"},
     ]
     try:
-        res = await call_gemini("gemini-flash-latest", messages)
+        res = await unified_completion(messages, tier="flash")
         return res["text"]
     except Exception as e:
         logger.error(f"Memory synthesis failed: {e}")
         return None
 
+async def extract_mastery_from_chat(user_message: str, ai_response: str) -> List[Dict]:
+    """SLM Tier: Detects concepts and estimated mastery levels (0.0-1.0)."""
+    system = """Analyze the chat and identify academic concepts discussed. 
+For each concept, estimate the student's mastery based on their questions/answers.
+Return JSON list: [{"concept": "string", "score": float}] where score is 0.0 to 1.0.
+Only return valid JSON."""
+    
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": f"User: {user_message}\nAI: {ai_response}"}
+    ]
+    try:
+        res = await unified_completion(messages, tier="flash", json_mode=True)
+        # Attempt to find list in JSON (might be wrapped in an object)
+        data = json.loads(res["text"])
+        if isinstance(data, list): return data
+        if isinstance(data, dict):
+            for v in data.values():
+                if isinstance(v, list): return v
+        return []
+    except Exception as e:
+        logger.error(f"Mastery extraction failed: {e}")
+        return []
+
 async def contextualize_query(query: str, history: list[dict]) -> str:
-    """Gemini Flash: Rewrites conversational query into a standalone search query."""
+    """Rewrites conversational query into a standalone search query."""
     if not history: return query
     
     history_str = "\n".join([f"{m['role']}: {m['content'][:300]}" for m in history[-5:]])
     prompt = f"Rewrite this question into a focused, standalone academic search query.\n\nHISTORY:\n{history_str}\n\nQUESTION: {query}"
     
     try:
-        res = await call_gemini("gemini-flash-latest", [{"role": "user", "content": prompt}])
+        res = await unified_completion([{"role": "user", "content": prompt}], tier="flash")
         return res["text"].strip()
     except Exception as e:
         logger.error(f"Contextualization failed: {e}")
         return query
 
-async def stream_socratic_response(
-    query: str,
-    history: list[dict],
-    context: dict,
-    user_profile: Optional[str] = None,
-) -> AsyncGenerator[str, None]:
-    """LLM Tier: Gemini Flash - Socratic Mentor streaming response."""
-    context_parts = []
-    for key, label in [("academic", "📚 Academic Materials"), ("gmail_intel", "📧 Personal Context (Gmail)"), 
-                       ("chat_assets", "📎 Uploaded Files"), ("memories", "🧠 Past Conversations")]:
-        if context.get(key):
-            context_parts.append(f"### {label}\n" + "\n---\n".join(r.get("content", r.get("text", "")) for r in context[key]))
-
-    profile_section = f"\n\n### 👤 Student Profile\n{user_profile}" if user_profile else ""
-    context_str = "\n\n".join(context_parts)
-
-    system_prompt = f"""You are FIWB — an elite Neural Academic Mentor (Socratic method).
-Mission: Empower the student using their actual academic data.
-Rules:
-- Guide with questions, don't just give answers.
-- Use LaTeX for math ($...$).
-- Reference retrieved documents and cite course names.
-- Personality: Engaging and encouraging.
-
-Retrieved Knowledge Context:
-{context_str if context_str else "No specific documents found."}
-{profile_section}"""
-
-    recent_history = history[-10:] if len(history) > 10 else history
-    messages = [{"role": "system", "content": system_prompt}] + recent_history + [{"role": "user", "content": query}]
-
-    # Gemini Streaming Implementation
-    key = os.getenv("GEMINI_API_KEY", "").strip()
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:streamGenerateContent?alt=sse&key={key}"
-    payload = await _prepare_gemini_payload(messages)
-
-    retries = 1
-    for attempt in range(retries + 1):
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            async with client.stream("POST", url, json=payload) as resp:
-                if resp.status_code == 429:
-                    if attempt < retries:
-                        await asyncio.sleep(2)
-                        continue
-                    retry_after = resp.headers.get("Retry-After")
-                    wait_msg = f" (Wait {retry_after}s)" if retry_after else ""
-                    logger.error(f"Gemini Rate Limit (Stream): 429{wait_msg}")
-                    yield f"Rate limit exceeded. Please wait a moment before trying again.{wait_msg}"
-                    return
-                if resp.status_code != 200:
-                    body = await resp.aread()
-                    logger.error(f"Gemini stream error {resp.status_code}: {body.decode()}")
-                    resp.raise_for_status()
-                    
-                async for line in resp.aiter_lines():
-                    if line.startswith("data: "):
-                        try:
-                            chunk_data = json.loads(line[6:])
-                            if "candidates" in chunk_data:
-                                text = chunk_data["candidates"][0]["content"]["parts"][0]["text"]
-                                yield text
-                        except Exception:
-                            continue
-                return # Success
-                
-            async for line in resp.aiter_lines():
-                if line.startswith("data: "):
-                    try:
-                        chunk_data = json.loads(line[6:])
-                        if "candidates" in chunk_data:
-                            text = chunk_data["candidates"][0]["content"]["parts"][0]["text"]
-                            yield text
-                    except Exception:
-                        continue
-
 async def stream_llm_response(messages: List[Dict]) -> AsyncGenerator[str, None]:
-    """Generic helper to stream from Gemini based on messages (OpenAI style)."""
-    key = os.getenv("GEMINI_API_KEY", "").strip()
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:streamGenerateContent?alt=sse&key={key}"
-    payload = await _prepare_gemini_payload(messages)
+    """Universal streaming helper."""
+    target_model = get_model_name(tier="flash")
+    
+    try:
+        response = await acompletion(
+            model=target_model,
+            messages=messages,
+            stream=True
+        )
+        
+        async for chunk in response:
+            content = chunk.choices[0].delta.content
+            if content:
+                yield content
+    except Exception as e:
+        logger.error(f"Streaming LLM Failed ({target_model}): {e}")
+        yield f"Error: {str(e)}"
 
-    retries = 1
-    for attempt in range(retries + 1):
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            async with client.stream("POST", url, json=payload) as resp:
-                if resp.status_code == 429:
-                    if attempt < retries:
-                        await asyncio.sleep(2)
-                        continue
-                    retry_after = resp.headers.get("Retry-After")
-                    wait_msg = f" (Wait {retry_after}s)" if retry_after else ""
-                    logger.error(f"Gemini Rate Limit (Stream LLM): 429{wait_msg}")
-                    yield f"Rate limit exceeded. Please wait a moment before trying again.{wait_msg}"
-                    return
-                if resp.status_code != 200:
-                    body = await resp.aread()
-                    logger.error(f"Gemini stream error {resp.status_code}: {body.decode()}")
-                    resp.raise_for_status()
-                    
-                async for line in resp.aiter_lines():
-                    if line.startswith("data: "):
-                        try:
-                            chunk_data = json.loads(line[6:])
-                            if "candidates" in chunk_data:
-                                text = chunk_data["candidates"][0]["content"]["parts"][0]["text"]
-                                yield text
-                        except Exception:
-                            continue
-                return # Success
-                
-            async for line in resp.aiter_lines():
-                if line.startswith("data: "):
-                    try:
-                        chunk_data = json.loads(line[6:])
-                        if "candidates" in chunk_data:
-                            text = chunk_data["candidates"][0]["content"]["parts"][0]["text"]
-                            yield text
-                    except Exception:
-                        continue
+async def generate_chat_response_simple(messages: List[Dict]) -> str:
+    """Non-streaming helper for quick tasks like quiz generation."""
+    res = await unified_completion(messages, tier="flash")
+    return res["text"]
+
+# Legacy alias for backward compatibility in some modules
+async def stream_socratic_response(query: str, history: list, context: dict, user_profile: str = None):
+    # This was partially redundant logic. Most calls now go through PromptArchitect -> stream_llm_response
+    # But we'll keep the signature if any old code still calls it directly.
+    from app.intelligence.prompt_architect import PromptArchitect
+    
+    # Extract chunks from context map
+    course_chunks = context.get("academic", []) + context.get("course_context", [])
+    
+    messages = PromptArchitect.build_messages(
+        user_query=query,
+        retrieved_chunks=course_chunks,
+        history=history,
+        profile=[{"content": user_profile}] if user_profile else None
+    )
+    
+    async for chunk in stream_llm_response(messages):
+        yield chunk
+async def evaluate_viva_transcript(transcript: List[Dict]) -> Dict:
+    """Analyzes a Viva transcript and returns a detailed report and grade."""
+    system = """You are an Academic Examiner. Evaluate the provided Viva transcript.
+    Analyze the student's understanding, depth of reasoning, and accuracy.
+    
+    Return a JSON object:
+    {
+      "grade": 0-100,
+      "strengths": ["list of 2-3 specific concepts mastered"],
+      "gaps": ["list of 2-3 specific concepts needing improvement"],
+      "grading_note": "A summary for the professor explaining the grade"
+    }
+    """
+    
+    transcript_text = "\n".join([f"{m['role']}: {m['content']}" for m in transcript])
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": f"TRANSCRIPT:\n{transcript_text}"}
+    ]
+    
+    try:
+        res = await unified_completion(messages, tier="pro", json_mode=True)
+        return json.loads(res["text"])
+    except Exception as e:
+        logger.error(f"Viva evaluation failed: {e}")
+        return {
+            "grade": 0,
+            "strengths": ["Evaluation failed"],
+            "gaps": ["System error during analysis"],
+            "grading_note": f"Error: {str(e)}"
+        }

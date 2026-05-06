@@ -1,21 +1,32 @@
 """
 mindmap_service.py
-Generation, caching, and editing of document mind maps using OpenAI.
+Generation, caching, and editing of document mind maps using LiteLLM.
 """
 from __future__ import annotations
 import json
 import hashlib
 import logging
+import os
+from typing import Optional
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from openai import AsyncOpenAI
+from litellm import acompletion
 
 from app.models.database import MindMap, Material
 
 logger = logging.getLogger(__name__)
 
-OPENAI_MODEL = "gpt-4o"
+# Configuration - Default to gpt-4o or gemini-1.5-pro for complex graph tasks
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").lower()
+if LLM_PROVIDER == "openai":
+    DEFAULT_MODEL = "gpt-4o-mini"
+elif LLM_PROVIDER == "anthropic":
+    DEFAULT_MODEL = "anthropic/claude-3-5-sonnet-20240620"
+else:
+    DEFAULT_MODEL = "gemini/gemini-1.5-pro"
+
+MINDMAP_MODEL = os.getenv("MINDMAP_MODEL", DEFAULT_MODEL)
 
 GENERATION_PROMPT = """You are a knowledge graph architect. Your task is to extract a comprehensive, structured mind map from the provided document.
 
@@ -130,7 +141,7 @@ async def generate_mind_map(
     material_id: int,
 ) -> dict:
     """
-    Generate a fresh mind map for a document using Claude. Saves to DB.
+    Generate a fresh mind map for a document using LiteLLM. Saves to DB.
     """
     mat_res = await db.execute(
         select(Material).where(Material.id == material_id, Material.user_id == user_id)
@@ -142,9 +153,8 @@ async def generate_mind_map(
     doc_text = material.full_text[:80000]  # hard cap for context window
     content_hash = _hash_text(material.full_text)
 
-    client = AsyncOpenAI()
-    response = await client.chat.completions.create(
-        model=OPENAI_MODEL,
+    response = await acompletion(
+        model=MINDMAP_MODEL,
         max_tokens=4096,
         response_format={"type": "json_object"},
         messages=[
@@ -206,9 +216,8 @@ async def edit_mind_map(
     current_data = mind_map.json_data
     history = json.loads(mind_map.history_stack or "[]")
 
-    client = AsyncOpenAI()
-    response = await client.chat.completions.create(
-        model=OPENAI_MODEL,
+    response = await acompletion(
+        model=MINDMAP_MODEL,
         max_tokens=4096,
         response_format={"type": "json_object"},
         messages=[

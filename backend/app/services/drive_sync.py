@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.models.database import User, Course, Material, AsyncSessionLocal
-from app.intelligence.sm_client import get_sm_client
+from app.intelligence.ms_client import get_ms_client
 from app.services.google_auth import build_credentials, refresh_credentials
 from app.utils.locks import GLOBAL_API_LOCK
 
@@ -27,7 +27,7 @@ logger = logging.getLogger("uvicorn.error")
 class DriveSyncService:
     def __init__(self, user: User):
         self.user = user
-        self.sm_client = get_sm_client()
+        self.ms_client = get_ms_client()
         self.service = None
 
     async def _get_drive_service(self):
@@ -128,7 +128,7 @@ class DriveSyncService:
                     dup_check = await db.execute(select(Material).where(Material.external_id == fid, Material.user_id == self.user.id))
                     existing = dup_check.scalars().first()
                     
-                    if existing and existing.indexed_in_supermemory:
+                    if existing and existing.indexed_in_memsapien:
                         logger.info(f"[Drive] File {existing.title} ({fid}) already exists and is indexed. Skipping.")
                         stats["success"] += 1 # Count as success since it's already there
                         continue
@@ -159,7 +159,7 @@ class DriveSyncService:
                         existing.mime_type = meta.get('mimeType')
                         # Update parent if it was provided (might have moved or been picked directly now)
                         existing.parent_external_id = parent_fid or existing.parent_external_id
-                        existing.indexed_in_supermemory = True
+                        existing.indexed_in_memsapien = True
                         existing.source_link = f"{os.getenv('BACKEND_URL', 'http://localhost:8002')}/profile/proxy/drive/{existing.id}"
                         new_mat = existing
                         logger.info(f"[Drive] File {meta.get('name')} updated in local DB")
@@ -178,7 +178,7 @@ class DriveSyncService:
                             parent_external_id=parent_fid,
                             # Temporary source_link, will be updated with actual ID below
                             source_link=f"{os.getenv('BACKEND_URL', 'http://localhost:8002')}/profile/proxy/drive/0",
-                            indexed_in_supermemory=True
+                            indexed_in_memsapien=True
                         )
                         db.add(new_mat)
                     
@@ -190,7 +190,7 @@ class DriveSyncService:
                     new_mat.source_link = f"{os.getenv('BACKEND_URL', 'http://localhost:8002')}/profile/proxy/drive/{local_id}"
                     await db.commit()
 
-                # 4. Push to Supermemory — per-page chunks
+                # 4. Push to Memsapien — per-page chunks
                 doc_title = meta.get('name', 'Untitled Document')
                 # Split on form-feed page boundaries
                 raw_pages = content.split("\x0c") if "\x0c" in content else [content]
@@ -200,7 +200,7 @@ class DriveSyncService:
                 for pg_idx, pg_text in enumerate(pages):
                     page_num = pg_idx + 1
                     pg_title = f"{doc_title} (p.{page_num})" if total_pages > 1 else doc_title
-                    sm_resp = await self.sm_client.add_document(
+                    sm_resp = await self.ms_client.add_document(
                         content=pg_text,
                         metadata={
                             "source": "google_drive",
@@ -222,9 +222,9 @@ class DriveSyncService:
 
                 if any_ok:
                     stats["success"] += 1
-                    logger.info(f"[Drive] Successfully synced to Supermemory: {meta.get('name')}")
+                    logger.info(f"[Drive] Successfully synced to Memsapien: {meta.get('name')}")
                 else:
-                    logger.error(f"[Drive] Failed to index in Supermemory: {meta.get('name')}")
+                    logger.error(f"[Drive] Failed to index in Memsapien: {meta.get('name')}")
                     stats["failed"] += 1
 
             except Exception as e:

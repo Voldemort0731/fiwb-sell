@@ -4,7 +4,7 @@ load_dotenv()
 import asyncio
 import os
 import sys
-from app.intelligence.sm_client import get_sm_client
+from app.intelligence.ms_client import get_ms_client
 from app.models.database import AsyncSessionLocal, User
 from sqlalchemy import select
 
@@ -23,9 +23,9 @@ async def inspect_tagged():
             user_id = user.id
     
     ctag = f"user_{user_id}"
-    print(f"--- Listing Documents for {ctag} in Supermemory ---")
+    print(f"--- Listing Documents for {ctag} in Memsapien ---")
     
-    sm = get_sm_client()
+    sm = get_ms_client()
     # Using "*" retrieves everything
     res = await sm.search(query="*", limit=100, container_tag=ctag)
     

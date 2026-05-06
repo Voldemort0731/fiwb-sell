@@ -6,11 +6,11 @@ import os
 import sys
 from sqlalchemy import select
 from app.models.database import AsyncSessionLocal, Material, User, Course
-from app.intelligence.sm_client import get_sm_client
+from app.intelligence.ms_client import get_ms_client
 
 async def debug_one():
     print("--- DEBUGGING ONE DOCUMENT INDEXING ---")
-    sm = get_sm_client()
+    sm = get_ms_client()
     
     async with AsyncSessionLocal() as db:
         res = await db.execute(select(User).limit(1))

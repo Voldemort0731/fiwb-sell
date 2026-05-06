@@ -11,6 +11,8 @@ function LoginInner() {
   const [error, setError] = useState("");
   const { setToken, setUser } = useAuthStore();
 
+  const API_URL = process.env.NEXT_PUBLIC_API_URL || process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8002";
+
   const login = useGoogleLogin({
     flow: "auth-code",
     onSuccess: async (codeResponse) => {
@@ -26,7 +28,8 @@ function LoginInner() {
         // Ensure fresh user stats are fetched and we redirect
         const me = await api.get("/auth/me");
         setUser(me);
-        router.push("/chat");
+        if (me.role === "professor") router.push("/professor");
+        else router.push("/chat");
       } catch (err: any) {
         console.error("Login failed:", err);
         setError("Failed to complete Google authentication.");
@@ -108,31 +111,84 @@ function LoginInner() {
           </p>
         )}
 
-        <p style={{ color: "var(--text-muted)", fontSize: 11, marginTop: 20, lineHeight: 1.5 }}>
+        <p style={{ color: "var(--text-muted)", fontSize: 11, marginTop: 20, lineHeight: 1.5, marginBottom: 24 }}>
           <style>{`@keyframes spin { 100% { transform: rotate(360deg); } }`}</style>
           By continuing, you authorize FIWB to access your Google Workspace data for personalized tutoring.
         </p>
+
+        <div style={{ paddingTop: 24, borderTop: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 12 }}>
+           <p style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Faculty & Administration</p>
+           <button 
+            onClick={() => login()}
+            className="btn-ghost" 
+            style={{ width: "100%", padding: "12px", fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
+           >
+             🎓 Professor Portal Login
+           </button>
+        </div>
       </div>
     </div>
   );
 }
 
 export default function RootPage() {
-  const { token } = useAuthStore();
+  const { token, user } = useAuthStore();
   const router = useRouter();
   const [mounted, setMounted] = useState(false);
   const [clientId, setClientId] = useState<string | null>(null);
+  const [configError, setConfigError] = useState<string | null>(null);
 
   useEffect(() => {
     setMounted(true);
     if (token) {
-      router.replace("/chat");
+      // If we have a token but no user, fetch user first
+      if (!user) {
+        api.get("/auth/me")
+          .then((u) => {
+            useAuthStore.getState().setUser(u);
+            if (!u.role_finalized) router.replace("/onboarding");
+            else if (u.role === "professor") router.replace("/professor");
+            else router.replace("/chat");
+          })
+          .catch(() => {
+            // If token is invalid, clear it
+            useAuthStore.getState().logout();
+          });
+      } else {
+        if (!user.role_finalized) router.replace("/onboarding");
+        else if (user.role === "professor") router.replace("/professor");
+        else router.replace("/chat");
+      }
     } else {
-      api.get("/auth/config").then((cfg) => setClientId(cfg.client_id)).catch(() => {});
+      console.log("[RootPage] Fetching auth config from:", "/auth/config");
+      api.get("/auth/config")
+        .then((cfg) => {
+          console.log("[RootPage] Config received:", cfg);
+          if (cfg?.client_id) setClientId(cfg.client_id);
+          else setConfigError("Backend returned invalid configuration.");
+        })
+        .catch((err) => {
+          console.error("[RootPage] Failed to fetch auth config:", err);
+          setConfigError("Cannot connect to backend service. Please ensure it's running on port 8002.");
+        });
     }
-  }, [token, router]);
+  }, [token, user, router]);
 
   if (!mounted || token) return null;
+  
+  if (configError) {
+    return (
+      <div style={{ height: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 20, textAlign: "center" }}>
+        <div style={{ width: 64, height: 64, borderRadius: 20, background: "rgba(239,68,68,0.1)", display: "flex", alignItems: "center", justifyContent: "center", color: "#ef4444", marginBottom: 24 }}>
+          ⚠️
+        </div>
+        <h1 style={{ fontSize: 24, fontWeight: 800, marginBottom: 12 }}>Connection Failure</h1>
+        <p style={{ color: "var(--text-secondary)", maxWidth: 400, marginBottom: 32 }}>{configError}</p>
+        <button onClick={() => window.location.reload()} className="btn-primary" style={{ padding: "12px 24px" }}>Retry Connection</button>
+      </div>
+    );
+  }
+
   if (!clientId) {
     return (
       <div style={{ position: "relative", height: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>

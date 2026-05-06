@@ -37,10 +37,16 @@ class User(Base):
     classroom_synced: Mapped[bool] = mapped_column(Boolean, default=False)
     drive_synced: Mapped[bool] = mapped_column(Boolean, default=False)
     watched_drive_folders: Mapped[Optional[str]] = mapped_column(Text) # JSON list of folder IDs
+    gmail_synced: Mapped[bool] = mapped_column(Boolean, default=False)
+    moodle_url: Mapped[Optional[str]] = mapped_column(String(500))
+    moodle_token: Mapped[Optional[str]] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(String(20), default="student") # "student" or "professor"
+    role_finalized: Mapped[bool] = mapped_column(Boolean, default=False)
 
     threads: Mapped[List["ChatThread"]] = relationship("ChatThread", back_populates="user", cascade="all, delete-orphan")
     courses: Mapped[List["Course"]] = relationship("Course", back_populates="user", cascade="all, delete-orphan")
     materials: Mapped[List["Material"]] = relationship("Material", back_populates="user", cascade="all, delete-orphan")
+    enrollments: Mapped[List["Enrollment"]] = relationship("Enrollment", back_populates="student", cascade="all, delete-orphan")
 
 
 class ChatThread(Base):
@@ -50,6 +56,8 @@ class ChatThread(Base):
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True)
     title: Mapped[str] = mapped_column(String(500), default="New Chat")
     folder_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    thread_type: Mapped[str] = mapped_column(String(50), default="general") # "general" or "viva"
+    viva_assessment_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("viva_assessments.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
@@ -87,6 +95,7 @@ class Course(Base):
 
     user: Mapped["User"] = relationship("User", back_populates="courses")
     materials: Mapped[List["Material"]] = relationship("Material", back_populates="course", cascade="all, delete-orphan")
+    enrollments: Mapped[List["Enrollment"]] = relationship("Enrollment", back_populates="course", cascade="all, delete-orphan")
 
 
 class Material(Base):
@@ -105,7 +114,7 @@ class Material(Base):
     source: Mapped[str] = mapped_column(String(50))  # classroom, drive, gmail, moodle, chat_upload
     external_id: Mapped[Optional[str]] = mapped_column(String(255))
     due_date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    indexed_in_supermemory: Mapped[bool] = mapped_column(Boolean, default=False)
+    indexed_in_memsapien: Mapped[bool] = mapped_column(Boolean, default=False)
     source_link: Mapped[Optional[str]] = mapped_column(String(1024))
     attachments: Mapped[Optional[str]] = mapped_column(Text) # JSON list of attachments
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -128,6 +137,74 @@ class MindMap(Base):
 
     user: Mapped["User"] = relationship("User")
     material: Mapped["Material"] = relationship("Material")
+
+
+class PerformanceMetric(Base):
+    __tablename__ = "performance_metrics"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True)
+    course_id: Mapped[int] = mapped_column(Integer, ForeignKey("courses.id"), index=True)
+    metric_type: Mapped[str] = mapped_column(String(50)) # e.g., "viva_score", "elo_change", "concept_mastery"
+    concept: Mapped[Optional[str]] = mapped_column(String(255))
+    value: Mapped[float] = mapped_column(Float)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    user: Mapped["User"] = relationship("User")
+    course: Mapped["Course"] = relationship("Course")
+
+
+class VivaAssessment(Base):
+    __tablename__ = "viva_assessments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    professor_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True)
+    course_id: Mapped[int] = mapped_column(Integer, ForeignKey("courses.id"), index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    objective: Mapped[str] = mapped_column(Text)
+    config_json: Mapped[str] = mapped_column(Text) # Parameters like difficulty, duration, focus
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    professor: Mapped["User"] = relationship("User")
+    course: Mapped["Course"] = relationship("Course")
+
+class VivaResult(Base):
+    __tablename__ = "viva_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    assessment_id: Mapped[int] = mapped_column(Integer, ForeignKey("viva_assessments.id"), index=True)
+    student_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True)
+    report_json: Mapped[str] = mapped_column(Text) # AI breakdown of strengths/weaknesses
+    grade: Mapped[float] = mapped_column(Float) # 0-100
+    status: Mapped[str] = mapped_column(String(50), default="submitted") # submitted, reviewed
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    assessment: Mapped["VivaAssessment"] = relationship("VivaAssessment")
+    student: Mapped["User"] = relationship("User")
+
+class EngagementHit(Base):
+    __tablename__ = "document_engagement"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    material_id: Mapped[int] = mapped_column(Integer, ForeignKey("materials.id"), index=True)
+    page_number: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    chunk_index: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    hit_count: Mapped[int] = mapped_column(Integer, default=1)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    material: Mapped["Material"] = relationship("Material")
+
+
+class Enrollment(Base):
+    __tablename__ = "enrollments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    student_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True)
+    course_id: Mapped[int] = mapped_column(Integer, ForeignKey("courses.id"), index=True)
+    enrolled_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    student: Mapped["User"] = relationship("User", back_populates="enrollments")
+    course: Mapped["Course"] = relationship("Course", back_populates="enrollments")
 
 
 async def init_db():

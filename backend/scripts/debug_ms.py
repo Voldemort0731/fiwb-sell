@@ -1,10 +1,10 @@
 import asyncio
 import os
 import pprint
-from app.intelligence.sm_client import SupermemoryClient
+from app.intelligence.ms_client import MemsapienClient
 
 async def check():
-    client = SupermemoryClient()
+    client = MemsapienClient()
     res = await client.search("Calculus Convergence of Sequences", limit=5)
     for doc in res.get("results", []):
         meta = doc.get("metadata", {})

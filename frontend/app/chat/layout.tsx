@@ -5,7 +5,7 @@ import { useAuthStore } from "@/lib/auth-store";
 import Sidebar from "@/components/sidebar/Sidebar";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
-  const { token } = useAuthStore();
+  const { token, user } = useAuthStore();
   const router = useRouter();
   const [collapsed, setCollapsed] = useState(false);
   const [mounted, setMounted] = useState(false);
@@ -16,10 +16,14 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (mounted && !token) {
-      router.replace("/");
+    if (mounted) {
+      if (!token) {
+        router.replace("/");
+      } else if (user && user.role === "professor") {
+        router.replace("/professor");
+      }
     }
-  }, [mounted, token, router]);
+  }, [mounted, token, user, router]);
 
   if (!mounted || !token) return null;
 

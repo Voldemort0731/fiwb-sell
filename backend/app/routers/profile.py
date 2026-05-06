@@ -4,7 +4,7 @@ Profile Router — Digital Twin profile, usage stats, courses
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 import io
 import json
 import asyncio
@@ -14,11 +14,11 @@ import hashlib
 import base64
 import httpx
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from app.models.database import get_db, User, Course, Material
 from app.utils.locks import GLOBAL_API_LOCK
 from app.utils.dependencies import get_current_user
-from app.intelligence.sm_client import get_sm_client
+from app.intelligence.ms_client import get_ms_client
 from app.services.google_auth import build_credentials, refresh_credentials
 from app.routers.integrations import GLOBAL_API_LOCK
 
@@ -65,8 +65,8 @@ async def whoami(current_user: User = Depends(get_current_user)):
 async def get_digital_twin(
     current_user: User = Depends(get_current_user),
 ):
-    """Retrieve the user's Digital Twin profile from Supermemory."""
-    sm = get_sm_client()
+    """Retrieve the user's Digital Twin profile from Memsapien."""
+    sm = get_ms_client()
     uid = current_user.email
     
     profile_res = await sm.search(
@@ -99,13 +99,296 @@ async def get_digital_twin(
         },
     }
 
+@router.get("/announcements")
+async def get_student_announcements(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Fetch recent announcements/reinforcement plans for enrolled courses."""
+    from app.models.database import Enrollment
+    
+    # Get enrolled courses
+    enr_res = await db.execute(select(Enrollment.course_id).where(Enrollment.student_id == current_user.id))
+    course_ids = [r[0] for r in enr_res.all()]
+    
+    if not course_ids:
+        return []
+        
+    res = await db.execute(
+        select(Material, Course.name)
+        .join(Course, Material.course_id == Course.id)
+        .where(Material.course_id.in_(course_ids), Material.material_type == "announcement")
+        .order_by(Material.created_at.desc())
+        .limit(5)
+    )
+    
+    return [
+        {
+            "id": mat.id,
+            "title": mat.title,
+            "content_preview": mat.content_preview,
+            "course_name": course_name,
+            "created_at": mat.created_at.isoformat()
+        }
+        for mat, course_name in res.all()
+    ]
+
+@router.get("/mastery")
+async def get_student_mastery(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Retrieve concept-level mastery scores for the student."""
+    from app.models.database import PerformanceMetric
+    
+    # Fetch recent metrics grouped by concept
+    res = await db.execute(
+        select(PerformanceMetric.concept, PerformanceMetric.value, PerformanceMetric.timestamp)
+        .where(PerformanceMetric.user_id == current_user.id, PerformanceMetric.metric_type == "concept_mastery")
+        .order_by(PerformanceMetric.timestamp.desc())
+    )
+    rows = res.all()
+    # Build unique concept map (latest score)
+    mastery = {}
+    for concept, score, ts in rows:
+        if concept not in mastery:
+            mastery[concept] = {
+                "concept": concept,
+                "score": score,
+                "last_reviewed": ts.strftime("%Y-%m-%d")
+            }
+            
+    # Filter for top N concepts
+    items = list(mastery.values())
+    items.sort(key=lambda x: x['score'], reverse=True)
+    return items[:12] 
+
+@router.get("/stats")
+async def get_profile_stats(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Returns overall mastery stats for the user."""
+    # Mastery is the average of all concept scores
+    from app.models.database import PerformanceMetric
+    mastery_res = await db.execute(
+        select(func.avg(PerformanceMetric.value))
+        .where(PerformanceMetric.user_id == current_user.id, PerformanceMetric.metric_type == "concept_mastery")
+    )
+    avg_mastery = mastery_res.scalar() or 0
+    
+    # Calculate Velocity: Avg change in mastery over last 7 days
+    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    vel_res = await db.execute(
+        select(func.avg(PerformanceMetric.value))
+        .where(PerformanceMetric.user_id == current_user.id, PerformanceMetric.timestamp > week_ago)
+    )
+    avg_recent = vel_res.scalar() or 0
+    
+    old_res = await db.execute(
+        select(func.avg(PerformanceMetric.value))
+        .where(PerformanceMetric.user_id == current_user.id, PerformanceMetric.timestamp <= week_ago)
+    )
+    avg_old = old_res.scalar() or 0
+    
+    velocity = 0
+    if avg_old > 0:
+        velocity = ((avg_recent - avg_old) / avg_old) * 100
+    elif avg_recent > 0:
+        velocity = 100 # Initial growth
+        
+    return {
+        "mastery": round(avg_mastery * 100),
+        "velocity": f"{'+' if velocity >= 0 else ''}{round(velocity, 1)}%"
+    }
+
+@router.get("/mastery/history")
+async def get_mastery_history(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Returns session-by-session mastery data for the Line Chart."""
+    from app.models.database import PerformanceMetric
+    
+    # We aggregate performance by day (session)
+    res = await db.execute(
+        select(
+            func.date(PerformanceMetric.timestamp).label('session_date'),
+            func.avg(PerformanceMetric.value).label('avg_mastery')
+        )
+        .where(PerformanceMetric.user_id == current_user.id)
+        .group_by('session_date')
+        .order_by('session_date')
+        .limit(15)
+    )
+    
+    history = []
+    for row in res.all():
+        history.append({
+            "session": str(row.session_date),
+            "mastery": round(row.avg_mastery * 100) # Convert 0-1 to percentage
+        })
+        
+    return history
+
+@router.get("/mastery-graph")
+async def get_mastery_graph(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Generates Nodes and Edges for the React Flow Mastery Graph."""
+    from app.models.database import PerformanceMetric
+    from app.services.openai_service import get_openai_client
+    import json
+    
+    # Cache for edges
+    if not hasattr(router, "_edge_cache"):
+        router._edge_cache = {}
+    
+    # 1. Fetch unique concepts from Performance (Actual Progress)
+    res = await db.execute(
+        select(
+            PerformanceMetric.concept, 
+            func.avg(PerformanceMetric.value).label('score')
+        )
+        .where(PerformanceMetric.user_id == current_user.id)
+        .group_by(PerformanceMetric.concept)
+    )
+    
+    performance_map = {row.concept: row.score for row in res.all() if row.concept}
+    
+    # 2. Fetch concepts from Materials (Curriculum Scope)
+    # We join Enrollment -> Course -> Material
+    from app.models.database import Enrollment, Course, Material
+    mat_res = await db.execute(
+        select(Material.title, Material.content_preview)
+        .join(Course, Material.course_id == Course.id)
+        .join(Enrollment, Course.id == Enrollment.course_id)
+        .where(Enrollment.student_id == current_user.id)
+    )
+    
+    # Extract concepts from titles/previews using a simple LLM pass or just using titles
+    material_concepts = []
+    for title, preview in mat_res.all():
+        material_concepts.append(title)
+        # Could extract more here, but titles are a good proxy for "Topics"
+        
+    # Combine and Deduplicate
+    all_concept_names = list(set(list(performance_map.keys()) + material_concepts))
+    
+    if not all_concept_names:
+        # Fallback: if totally empty, return empty
+        return {"nodes": [], "edges": []}
+        
+    concepts = []
+    for name in all_concept_names:
+        concepts.append({
+            "concept": name,
+            "score": performance_map.get(name, 0) # 0 if not encountered yet
+        })
+        
+    # Check Cache
+    cache_key = f"edges_{hash(tuple(sorted(all_concept_names)))}"
+    if cache_key in router._edge_cache:
+        edges_list = router._edge_cache[cache_key]
+    else:
+        # 2. Use LLM to infer dependencies (edges)
+        prompt = f"""
+        You are an AI Curriculum mapper. Analyze this list of concepts the student has encountered:
+        {[c['concept'] for c in concepts]}
+        
+        1. Identify the 10-12 MOST CRITICAL "Anchor Concepts" that form the backbone of this subject.
+        2. Filter out minor details or highly specific sub-topics.
+        3. Return a JSON array of edges representing PRE-REQUISITE relationships between these anchor concepts. 
+        
+        Format: {{"edges": [{{"source": "Concept A", "target": "Concept B"}}]}}
+        Return ONLY JSON. 
+        """
+        
+        client = get_openai_client()
+        try:
+            response = await client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"}
+            )
+            try:
+                edges_data = json.loads(response.choices[0].message.content)
+                if isinstance(edges_data, dict):
+                    edges_list = edges_data.get("edges", edges_data.get("relationships", []))
+                else:
+                    edges_list = edges_data
+                router._edge_cache[cache_key] = edges_list
+            except:
+                edges_list = []
+        except:
+            edges_list = []
+        
+    # Filter nodes to only include those in the anchor set (sources/targets from LLM)
+    anchor_names = set()
+    for e in edges_list:
+        anchor_names.add(e.get("source"))
+        anchor_names.add(e.get("target"))
+        
+    final_nodes = []
+    for c in concepts:
+        if c['concept'] in anchor_names:
+            final_nodes.append({
+                "id": c['concept'],
+                "data": {"label": c['concept'], "score": c['score']},
+                "position": {"x": 0, "y": 0}
+            })
+            
+    edges = []
+    for idx, e in enumerate(edges_list):
+        if e.get("source") and e.get("target"):
+            edges.append({
+                "id": f"e{idx}",
+                "source": e["source"],
+                "target": e["target"],
+                "animated": True
+            })
+            
+    return {"nodes": final_nodes, "edges": edges}
+
+
+@router.get("/courses/discover")
+async def discover_courses(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all available institutional courses that the student isn't enrolled in yet."""
+    from app.models.database import Course, Enrollment
+    # Subquery for enrolled IDs
+    enrolled_stmt = select(Enrollment.course_id).where(Enrollment.student_id == current_user.id)
+    enrolled_ids = (await db.execute(enrolled_stmt)).scalars().all()
+    
+    # Select courses not in enrolled_ids
+    stmt = select(Course).where(Course.id.notin_(enrolled_ids) if enrolled_ids else True)
+    courses = (await db.execute(stmt)).scalars().all()
+    
+    return [
+        {
+            "id": c.id,
+            "name": c.name,
+            "teacher": c.teacher,
+            "section": c.section,
+        }
+        for c in courses
+    ]
 
 @router.get("/courses")
 async def get_courses(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Course).where(Course.user_id == current_user.id))
+    """List all courses the student is enrolled in."""
+    from app.models.database import Course, Enrollment
+    result = await db.execute(
+        select(Course)
+        .join(Enrollment, Course.id == Enrollment.course_id)
+        .where(Enrollment.student_id == current_user.id)
+    )
     courses = result.scalars().all()
     return [
         {
@@ -119,26 +402,41 @@ async def get_courses(
         for c in courses
     ]
 
-
 @router.get("/courses/{course_id}")
 async def get_course_details(
     course_id: int,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    # CID is now an int handled by FastAPI
-    result = await db.execute(
-        select(Course).where(Course.user_id == current_user.id, Course.id == course_id)
-    )
-    course = result.scalar_one_or_none()
-    if not course:
-        print(f"❌ [get_course_details] NOT FOUND in DB for user {current_user.id}")
-        raise HTTPException(status_code=404, detail="Course not found")
+    """Get details and materials for a specific course."""
+    from app.models.database import Course, Enrollment, Material
+    # 1. Check enrollment
+    enr_stmt = select(Enrollment).where(Enrollment.student_id == current_user.id, Enrollment.course_id == course_id)
+    enr = (await db.execute(enr_stmt)).scalar_one_or_none()
+    if not enr:
+        raise HTTPException(status_code=403, detail="Not enrolled in this course")
+        
+    # 2. Get course
+    course = (await db.execute(select(Course).where(Course.id == course_id))).scalar_one_or_none()
+    
+    # 3. Get materials
+    mats_stmt = select(Material).where(Material.course_id == course_id)
+    mats = (await db.execute(mats_stmt)).scalars().all()
+    
     return {
         "id": course.id,
         "name": course.name,
-        "source": course.source,
+        "section": course.section,
         "teacher": course.teacher,
+        "materials": [
+            {
+                "id": m.id,
+                "title": m.title,
+                "type": m.material_type,
+                "created_at": m.created_at.isoformat() if m.created_at else None
+            }
+            for m in mats
+        ]
     }
 
 
@@ -173,15 +471,67 @@ async def get_course_materials(
         for m in mats
     ]
 
-
+@router.get("/courses/{course_id}")
+async def get_course_detail(
+    course_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Fetch detailed course info for a student, including their enrollment status and materials."""
+    from app.models.database import Course, Enrollment, Material
+    
+    # Check if student is enrolled
+    stmt = select(Enrollment).where(Enrollment.student_id == current_user.id, Enrollment.course_id == course_id)
+    enrolled = (await db.execute(stmt)).scalar_one_or_none()
+    if not enrolled:
+        raise HTTPException(status_code=403, detail="Access denied. You are not enrolled in this course.")
+        
+    course_stmt = select(Course).where(Course.id == course_id)
+    course = (await db.execute(course_stmt)).scalar_one_or_none()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+        
+    # Get materials
+    mat_stmt = select(Material).where(Material.course_id == course_id)
+    materials = (await db.execute(mat_stmt)).scalars().all()
+    
+    return {
+        "id": course.id,
+        "name": course.name,
+        "teacher": "Institutional Faculty",
+        "section": course.section,
+        "materials": [
+            {
+                "id": m.id,
+                "title": m.title,
+                "created_at": m.created_at.isoformat(),
+                "type": m.type
+            } for m in materials
+        ]
+    }
 @router.get("/materials")
 async def get_materials(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Material).where(Material.user_id == current_user.id).order_by(Material.created_at.desc()).limit(50)
+    from app.models.database import Enrollment, Course
+    # 1. Get enrolled course IDs
+    enr_res = await db.execute(select(Enrollment.course_id).where(Enrollment.student_id == current_user.id))
+    course_ids = [r[0] for r in enr_res.all()]
+    
+    # 2. Query materials owned by user OR in enrolled courses
+    from sqlalchemy import or_
+    stmt = (
+        select(Material)
+        .where(or_(
+            Material.user_id == current_user.id,
+            Material.course_id.in_(course_ids) if course_ids else False
+        ))
+        .order_by(Material.created_at.desc())
+        .limit(100)
     )
+    
+    result = await db.execute(stmt)
     mats = result.scalars().all()
     return [
         {
@@ -191,11 +541,14 @@ async def get_materials(
             "source": m.source,
             "preview": m.content_preview,
             "full_text": m.full_text,
-            "external_id": m.external_id, # Link for attachments
-            "parent_id": m.parent_external_id, # Return link to parent
+            "external_id": m.external_id,
+            "parent_id": m.parent_external_id,
             "source_link": m.source_link,
+            "file_content_exists": m.file_content is not None,
+            "indexed": m.indexed_in_memsapien,
             "attachments": json.loads(m.attachments) if m.attachments else [],
             "due_date": m.due_date.isoformat() if m.due_date else None,
+            "course_id": m.course_id
         }
         for m in mats
     ]
@@ -471,7 +824,7 @@ async def delete_material(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Delete a material from the local DB and Supermemory."""
+    """Delete a material from the local DB and Memsapien."""
     # 1. Find the material
     stmt = select(Material).where(Material.id == material_id, Material.user_id == current_user.id)
     res = await db.execute(stmt)
@@ -480,9 +833,9 @@ async def delete_material(
     if not material:
         raise HTTPException(status_code=404, detail="Material not found")
         
-    # 2. Delete from Supermemory (if indexed)
+    # 2. Delete from Memsapien (if indexed)
     # We search by material_id in metadata to find the docId
-    sm = get_sm_client()
+    sm = get_ms_client()
     try:
         filters = {
             "AND": [
@@ -499,7 +852,7 @@ async def delete_material(
                 await sm.delete_document(doc_id)
     except Exception as e:
         # We don't block DB deletion if SM fails, but we log it
-        print(f"Error deleting from Supermemory during material removal: {e}")
+        print(f"Error deleting from Memsapien during material removal: {e}")
         
     # 3. Delete from Local DB
     await db.delete(material)

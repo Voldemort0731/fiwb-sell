@@ -8,7 +8,7 @@ import json
 from app.intelligence.retrieval import RetrievalOrchestrator
 from app.models.database import AsyncSessionLocal, User
 from sqlalchemy import select
-from app.intelligence.sm_client import get_sm_client
+from app.intelligence.ms_client import get_ms_client
 
 # Force UTF-8 for windows stdout
 if sys.platform == 'win32':
@@ -30,7 +30,7 @@ async def test_rag_raw_audit():
             print(f"Testing for user: {user_email}\n")
 
     # 2. Manual Raw Search (Replicating RetrievalOrchestrator steps)
-    sm = get_sm_client()
+    sm = get_ms_client()
     ctag = f"user_{user_id}"
     query = "struct"
     

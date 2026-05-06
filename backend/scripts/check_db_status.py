@@ -11,16 +11,16 @@ def check_db():
     c = conn.cursor()
     
     print("--- Local DB Indexing Status ---")
-    c.execute("SELECT count(*) FROM materials WHERE indexed_in_supermemory = 1")
+    c.execute("SELECT count(*) FROM materials WHERE indexed_in_memsapien = 1")
     indexed_count = c.fetchone()[0]
-    c.execute("SELECT count(*) FROM materials WHERE indexed_in_supermemory = 0")
+    c.execute("SELECT count(*) FROM materials WHERE indexed_in_memsapien = 0")
     not_indexed_count = c.fetchone()[0]
     
-    print(f"Indexed in Supermemory: {indexed_count}")
+    print(f"Indexed in Memsapien: {indexed_count}")
     print(f"Not Indexed: {not_indexed_count}")
     
     print("\nRecent Indexed Materials:")
-    c.execute("SELECT title, material_type, external_id FROM materials WHERE indexed_in_supermemory = 1 LIMIT 10")
+    c.execute("SELECT title, material_type, external_id FROM materials WHERE indexed_in_memsapien = 1 LIMIT 10")
     for title, mtype, eid in c.fetchall():
         print(f"- [{mtype}] {title} (ID: {eid})")
     

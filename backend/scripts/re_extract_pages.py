@@ -2,7 +2,7 @@
 re_extract_pages.py
 Re-downloads PDFs from Google Drive using stored credentials and re-extracts
 them page-by-page (with form-feed separators), updating the local DB full_text
-and re-indexing to Supermemory with page_number metadata.
+and re-indexing to Memsapien with page_number metadata.
 """
 from dotenv import load_dotenv
 load_dotenv()
@@ -18,7 +18,7 @@ if sys.platform == "win32":
     sys.stdout = codecs.getwriter("utf-8")(sys.stdout.buffer, "strict")
 
 from app.models.database import AsyncSessionLocal, Material, User
-from app.intelligence.sm_client import get_sm_client
+from app.intelligence.ms_client import get_ms_client
 from app.services.google_auth import refresh_credentials
 from app.services.drive_sync import DriveSyncService
 
@@ -44,7 +44,7 @@ async def extract_pdf_pages_from_drive(file_id: str, creds) -> list[dict]:
 
 async def main():
     print("--- RE-EXTRACTING PDF PAGES FROM GOOGLE DRIVE ---\n")
-    sm = get_sm_client()
+    sm = get_ms_client()
 
     async with AsyncSessionLocal() as db:
         user_res = await db.execute(select(User).limit(1))
@@ -120,7 +120,7 @@ async def main():
                 mat.content_preview = (page_texts[0] or "")[:500]
                 await db.commit()
 
-                # Re-push to Supermemory per-page
+                # Re-push to Memsapien per-page
                 for i, pg_text in enumerate(page_texts):
                     if not pg_text.strip():
                         continue

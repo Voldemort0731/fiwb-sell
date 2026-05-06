@@ -15,10 +15,12 @@ from sqlalchemy import select, update, func
 from pydantic import BaseModel
 from app.models.database import get_db, ChatThread, ChatMessage, User, Material, AsyncSessionLocal
 from app.utils.dependencies import get_current_user
-from app.services.openai_service import synthesize_memory, stream_llm_response
+from app.services.openai_service import (
+    triage_query, synthesize_memory, contextualize_query, stream_llm_response, extract_mastery_from_chat
+)
 from app.intelligence.retrieval import RetrievalOrchestrator
 from app.intelligence.prompt_architect import PromptArchitect
-from app.intelligence.sm_client import get_sm_client
+from app.intelligence.ms_client import get_ms_client
 import os
 import logging
 
@@ -105,8 +107,8 @@ async def delete_thread(
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
         
-    # Delete associated memories from Supermemory
-    sm = get_sm_client()
+    # Delete associated memories from Memsapien
+    sm = get_ms_client()
     asyncio.create_task(sm.delete_thread_memories(user_email=current_user.email, thread_id=thread_id))
         
     await db.delete(thread)
@@ -242,6 +244,113 @@ async def get_messages(
     ]
 
 
+# ── Viva / Assignments ────────────────────────────────────────────────
+@router.post("/assignments/{assessment_id}/start")
+async def start_viva_assessment(
+    assessment_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Start a new AI Viva thread for a specific assessment."""
+    from app.models.database import VivaAssessment, Course
+    
+    # 1. Fetch assessment
+    res = await db.execute(select(VivaAssessment).where(VivaAssessment.id == assessment_id))
+    assessment = res.scalar_one_or_none()
+    if not assessment:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+        
+    # 2. Create dedicated viva thread
+    thread = ChatThread(
+        user_id=current_user.id, 
+        title=f"Viva: {assessment.title}",
+        thread_type="viva",
+        viva_assessment_id=assessment_id
+    )
+    db.add(thread)
+    await db.commit()
+    await db.refresh(thread)
+    
+    # 3. Create the initial prompt (Assistant opens the thread)
+    initial_prompt = f"Welcome to the Viva session for '{assessment.title}'. I will be evaluating your understanding of the following objectives: {assessment.objective}. Let's begin. Can you explain your core understanding of this topic?"
+    
+    ai_msg = ChatMessage(
+        thread_id=thread.id,
+        role="assistant",
+        content=initial_prompt
+    )
+    db.add(ai_msg)
+    await db.commit()
+    
+    return {"thread_id": thread.id, "title": thread.title}
+
+
+@router.get("/assignments")
+async def list_assignments(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """List assessments available to the student."""
+    from app.models.database import VivaAssessment, Course, PerformanceMetric, Enrollment
+    
+    # Filter by student enrollment
+    res = await db.execute(
+        select(VivaAssessment, Course.name)
+        .join(Course, VivaAssessment.course_id == Course.id)
+        .join(Enrollment, Enrollment.course_id == Course.id)
+        .where(Enrollment.student_id == current_user.id)
+    )
+    rows = res.all()
+    
+    assignments = []
+    for ass, course_name in rows:
+        met_res = await db.execute(select(PerformanceMetric).where(
+            PerformanceMetric.user_id == current_user.id,
+            PerformanceMetric.metric_type == "viva_score",
+            PerformanceMetric.course_id == ass.course_id
+        ))
+        met = met_res.scalar_one_or_none()
+        
+        assignments.append({
+            "id": ass.id,
+            "title": ass.title,
+            "course_name": course_name,
+            "objectives_count": len(ass.objective.split(',')),
+            "status": "completed" if met else "pending",
+            "score": met.value if met else None
+        })
+    return assignments
+
+
+@router.get("/assignments/{assessment_id}/report")
+async def get_viva_report_student(
+    assessment_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Fetch student's own detailed AI report for a completed Viva."""
+    from app.models.database import VivaResult, VivaAssessment
+    
+    stmt = (
+        select(VivaResult, VivaAssessment.title)
+        .join(VivaAssessment, VivaResult.assessment_id == VivaAssessment.id)
+        .where(VivaResult.student_id == current_user.id, VivaResult.assessment_id == assessment_id)
+        .order_by(VivaResult.created_at.desc())
+        .limit(1)
+    )
+    res = (await db.execute(stmt)).first()
+    if not res:
+        raise HTTPException(status_code=404, detail="Result not found. Complete the Viva first.")
+        
+    return {
+        "id": res.VivaResult.id,
+        "assessment_title": res.title,
+        "grade": res.VivaResult.grade,
+        "report": json.loads(res.VivaResult.report_json),
+        "created_at": res.VivaResult.created_at.isoformat()
+    }
+
+
 # ── Streaming Chat ────────────────────────────────────────────────────────
 @router.post("/send")
 async def send_message(
@@ -299,8 +408,8 @@ async def regenerate_message(
     )
     to_delete = res.scalars().all()
 
-    # 3. Cleanup Supermemory for assistant responses being deleted
-    sm = get_sm_client()
+    # 3. Cleanup Memsapien for assistant responses being deleted
+    sm = get_ms_client()
     for msg in to_delete:
         if msg.role == "assistant":
             # Fire-and-forget deletion
@@ -343,10 +452,36 @@ async def _generate_chat_response(thread_id: int, content: str, image_base64: Op
             query = content
             user_email = current_user.email
 
+            # ── Step 0: Check Thread Type ──────────────────────────────────
+            is_viva = thread.thread_type == "viva"
+            viva_objective = None
+            if is_viva and thread.viva_assessment_id:
+                from app.models.database import VivaAssessment
+                v_res = await db.execute(select(VivaAssessment).where(VivaAssessment.id == thread.viva_assessment_id))
+                v_ass = v_res.scalar_one_or_none()
+                if v_ass:
+                    viva_objective = v_ass.objective
+
             # ── Step 1: Triage + retrieve context ──────────────────────────
             greetings = {"hello", "hi", "hey", "thanks", "thank you", "bye"}
             is_greeting = query.strip().lower() in greetings
-            query_type = "general_chat" if is_greeting else "academic_question"
+            query_type = "viva" if is_viva else ("general_chat" if is_greeting else "academic_question")
+
+            # ── Record Engagement (Background) ─────────────────────────────
+            async def _record_hits(chunks):
+                from app.models.database import EngagementHit, AsyncSessionLocal
+                async with AsyncSessionLocal() as db_hit:
+                    for chunk in chunks:
+                        meta = chunk.get("metadata", {})
+                        mat_id = meta.get("material_id")
+                        if mat_id:
+                            hit = EngagementHit(
+                                material_id=int(mat_id),
+                                page_number=meta.get("page_number"),
+                                chunk_index=meta.get("chunk_index")
+                            )
+                            db_hit.add(hit)
+                    await db_hit.commit()
 
             # ── Mind Map Intent Detection ──────────────────────────────────────
             import re as _re
@@ -445,7 +580,7 @@ async def _generate_chat_response(thread_id: int, content: str, image_base64: Op
                             if page_text:
                                 logger.info(f"[Chat] Injecting exact viewer context: Mat {mat_id} Page {page_num}")
                                 
-                                # Filter out any duplicate chunk from Supermemory that matches this exact page
+                                # Filter out any duplicate chunk from Memsapien that matches this exact page
                                 course_chunks = [
                                     c for c in course_chunks 
                                     if str(c.get("metadata", {}).get("material_id")) != str(mat_id) 
@@ -501,6 +636,9 @@ async def _generate_chat_response(thread_id: int, content: str, image_base64: Op
             print(f"[Chat] Snapshot taken: {len(final_citations)} citations ready for prompt and DB.")
             logger.info(f"[Chat] Snapshot taken: {len(final_citations)} citations ready for prompt and DB.")
 
+            # Record engagement hit in background
+            asyncio.create_task(_record_hits(course_chunks))
+
             # ── Viewer context injection ────────────────────────────────────
             viewer_hint = ""
             if viewer_context and viewer_context.get("docId") and viewer_context.get("pageNumber"):
@@ -530,6 +668,10 @@ async def _generate_chat_response(thread_id: int, content: str, image_base64: Op
                 query_type=query_type,
                 image_base64=image_base64,
                 citation_map=state.citation_map,
+                mastery={
+                    **(context.get("mastery") or {}),
+                    "viva_objective": viva_objective
+                },
             )
             
             # ── Step 3: Stream Gemini response ─────────────────────────────
@@ -600,7 +742,7 @@ async def _synthesize_and_store(thread_id: int, message_id: int, user_msg: str, 
     try:
         memory_doc = await synthesize_memory(user_msg, ai_response, email)
         if memory_doc:
-            sm = get_sm_client()
+            sm = get_ms_client()
             await sm.add_document(
                 content=memory_doc,
                 metadata={
@@ -612,6 +754,33 @@ async def _synthesize_and_store(thread_id: int, message_id: int, user_msg: str, 
                 user_email=email,
                 title="Learning Memory",
             )
+            
+        # ── Step 2: Extract Mastery ──────────────────────────────────
+        mastery_data = await extract_mastery_from_chat(user_msg, ai_response)
+        if mastery_data:
+            from app.models.database import PerformanceMetric, User
+            async with AsyncSessionLocal() as db_m:
+                user_res = await db_m.execute(select(User).where(User.email == email))
+                user = user_res.scalar_one_or_none()
+                if user:
+                    for m in mastery_data:
+                        concept = m.get("concept")
+                        score = m.get("score")
+                        if concept and score is not None:
+                            metric = PerformanceMetric(
+                                user_id=user.id,
+                                course_id=1, # Default or link to thread course
+                                metric_type="concept_mastery",
+                                value=float(score),
+                                concept=concept
+                            )
+                            db_m.add(metric)
+                    await db_m.commit()
+        # ── Check for Viva Completion ──────────────────────────────────
+        if "[VIVA_COMPLETE" in ai_response:
+            from app.utils.viva_evaluator import process_viva_completion
+            asyncio.create_task(process_viva_completion(thread_id, email))
+
     except Exception as e:
         print(f"[Memory Synthesis] Failed: {e}")
 
@@ -634,10 +803,10 @@ async def upload_file(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Upload a PDF/text file into the chat context and index to Supermemory per-page."""
+    """Upload a PDF/text file into the chat context and index to Memsapien per-page."""
     import io
     content_bytes = await file.read()
-    sm = get_sm_client()
+    sm = get_ms_client()
     indexed = False
 
     if file.content_type == "application/pdf":
@@ -698,7 +867,7 @@ async def upload_file(
         file_content=content_bytes,
         mime_type=file.content_type or "application/octet-stream",
         full_text=text_content if 'text_content' in locals() else None,
-        indexed_in_supermemory=indexed
+        indexed_in_memsapien=indexed
     )
     db.add(new_mat)
     await db.commit()

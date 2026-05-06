@@ -4,7 +4,7 @@ load_dotenv()
 import asyncio
 import os
 import sys
-from app.intelligence.sm_client import get_sm_client
+from app.intelligence.ms_client import get_ms_client
 
 # Force UTF-8 for windows stdout
 if sys.platform == 'win32':
@@ -12,8 +12,8 @@ if sys.platform == 'win32':
     sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
 
 async def inspect_all():
-    sm = get_sm_client()
-    print("--- Listing ALL Documents in Supermemory ---")
+    sm = get_ms_client()
+    print("--- Listing ALL Documents in Memsapien ---")
     
     # Using "*" retrieves everything
     res = await sm.search(query="*", limit=50)

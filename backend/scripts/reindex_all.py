@@ -5,7 +5,7 @@ import asyncio
 import sys
 from sqlalchemy import select
 from app.models.database import AsyncSessionLocal, Material, User, Course
-from app.intelligence.sm_client import get_sm_client
+from app.intelligence.ms_client import get_ms_client
 
 if sys.platform == "win32":
     import codecs
@@ -63,8 +63,8 @@ async def _extract_pages(full_text: str) -> list[dict]:
 
 
 async def reindex_all():
-    print("--- STARTING SUPERMEMORY RE-INDEX (per-page chunks) ---")
-    sm = get_sm_client()
+    print("--- STARTING MEMSAPIEN RE-INDEX (per-page chunks) ---")
+    sm = get_ms_client()
 
     async with AsyncSessionLocal() as db:
         # 1. Get User
@@ -136,7 +136,7 @@ async def reindex_all():
                     print(f"\n     [ERROR] page {page['page_number']}: {e}")
 
             if ok:
-                mat.indexed_in_supermemory = True
+                mat.indexed_in_memsapien = True
                 success_count += 1
                 print(" OK")
             else:

@@ -1,8 +1,8 @@
 import asyncio
-from app.intelligence.sm_client import SupermemoryClient
+from app.intelligence.ms_client import MemsapienClient
 
 async def run():
-    client = SupermemoryClient()
+    client = MemsapienClient()
     res = await client.search('Convergence', limit=3)
     for c in res.get('results', []):
         print("metadata:", c.get('metadata'))

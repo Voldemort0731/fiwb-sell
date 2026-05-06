@@ -4,7 +4,7 @@ load_dotenv()
 import asyncio
 import sys
 import json
-from app.intelligence.sm_client import get_sm_client
+from app.intelligence.ms_client import get_ms_client
 from app.models.database import AsyncSessionLocal, User
 from sqlalchemy import select
 
@@ -13,7 +13,7 @@ if sys.platform == 'win32':
     sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
 
 async def main():
-    sm = get_sm_client()
+    sm = get_ms_client()
     async with AsyncSessionLocal() as db:
         res = await db.execute(select(User).limit(1))
         user = res.scalar_one_or_none()

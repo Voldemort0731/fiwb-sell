@@ -69,5 +69,6 @@ yarn-error.log*
 *.db-wal
 
 # Large Data/Scratch
-/scratch/
+scratch/
 /tmp/
+.claude/

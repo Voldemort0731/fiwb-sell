@@ -27,12 +27,12 @@ async def verify_openai():
         print(f"[X] OpenAI Error: {e}")
         return False
 
-async def verify_supermemory():
-    print("\n--- Verification: Supermemory ---")
-    api_key = os.getenv("SUPERMEMORY_API_KEY")
-    base_url = os.getenv("SUPERMEMORY_URL", "https://api.supermemory.ai").rstrip("/")
+async def verify_memsapien():
+    print("\n--- Verification: Memsapien ---")
+    api_key = os.getenv("MEMSAPIEN_API_KEY")
+    base_url = os.getenv("MEMSAPIEN_URL", "https://api.memsapien.ai").rstrip("/")
     if not api_key:
-        print("[X] SUPERMEMORY_API_KEY is missing!")
+        print("[X] MEMSAPIEN_API_KEY is missing!")
         return False
     
     try:
@@ -44,13 +44,13 @@ async def verify_supermemory():
                 json={"q": "test", "limit": 1}
             )
             if response.status_code == 200:
-                print(f"[V] Supermemory API reachable (Status 200)")
+                print(f"[V] Memsapien API reachable (Status 200)")
                 return True
             else:
-                print(f"[X] Supermemory Error: Status {response.status_code} - {response.text}")
+                print(f"[X] Memsapien Error: Status {response.status_code} - {response.text}")
                 return False
     except Exception as e:
-        print(f"[X] Supermemory Connection Error: {e}")
+        print(f"[X] Memsapien Connection Error: {e}")
         return False
 
 async def verify_db():
@@ -84,7 +84,7 @@ async def main():
     print("Starting FIWB Backend Diagnostic...\n")
     results = await asyncio.gather(
         verify_openai(),
-        verify_supermemory(),
+        verify_memsapien(),
         verify_db()
     )
     
