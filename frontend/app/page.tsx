@@ -1,14 +1,15 @@
 "use client";
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useAuthStore } from "@/lib/auth-store";
 import { api } from "@/lib/api";
 import { GoogleOAuthProvider, useGoogleLogin } from "@react-oauth/google";
 
 function LoginInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState(searchParams?.get("reason") === "session_expired" ? "Your session has expired. Please sign in again." : "");
   const { setToken, setUser } = useAuthStore();
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8002";
@@ -51,13 +52,8 @@ function LoginInner() {
 
       <div className="glass-strong slide-up" style={{ width: 440, padding: "48px 40px", textAlign: "center", position: "relative", zIndex: 1 }}>
         {/* Logo */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, marginBottom: 32 }}>
-          <div style={{
-            width: 48, height: 48, borderRadius: 14,
-            background: "linear-gradient(135deg, #8b5cf6, #06b6d4)",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            fontSize: 22, boxShadow: "0 8px 24px rgba(139,92,246,0.4)"
-          }}>🧠</div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 12, marginBottom: 32 }}>
+          <img src="/logo.png" alt="FIWB Logo" style={{ width: 48, height: 48, borderRadius: 12, objectFit: "cover", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }} />
           <span style={{ fontSize: 26, fontWeight: 700 }} className="gradient-text">FIWB</span>
         </div>
 

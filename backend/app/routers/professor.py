@@ -8,7 +8,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from app.models.database import get_db, User, Course, Material, PerformanceMetric, VivaAssessment
+from app.models.database import get_db, User, Course, Material, PerformanceMetric, VivaAssessment, VivaResult, Enrollment
 from app.utils.dependencies import get_current_user
 from app.intelligence.ms_client import get_ms_client
 from app.routers.integrations import _extract_text_from_bytes
@@ -159,7 +159,6 @@ async def list_professor_assessments(
 ):
     """List all AI Viva assessments created by this professor."""
     check_professor(current_user)
-    from sqlalchemy import func
     from app.models.database import VivaAssessment, VivaResult
     
     # Fetch assessments + submission counts
@@ -182,25 +181,6 @@ async def list_professor_assessments(
         } for ass, count in rows
     ]
 
-@router.post("/courses/{course_id}/enroll")
-async def enroll_in_course(
-    course_id: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Enroll a student in a course."""
-    from app.models.database import Enrollment
-    
-    # Check if already enrolled
-    res = await db.execute(select(Enrollment).where(Enrollment.student_id == current_user.id, Enrollment.course_id == course_id))
-    if res.scalar_one_or_none():
-        return {"message": "Already enrolled"}
-        
-    enrollment = Enrollment(student_id=current_user.id, course_id=course_id)
-    db.add(enrollment)
-    await db.commit()
-    return {"ok": True}
-
 @router.get("/courses/{course_id}/mastery-graph")
 async def get_course_mastery_graph(
     course_id: int,
@@ -210,15 +190,10 @@ async def get_course_mastery_graph(
     """Generates Nodes and Edges for the React Flow Mastery Graph (Class Average)."""
     check_professor(current_user)
     from app.services.openai_service import get_openai_client
-    import json
     
-    # Static cache for edges to prevent redundant LLM calls
+    # In-memory edge cache to avoid redundant LLM calls when concept list is unchanged
     if not hasattr(router, "_edge_cache"):
         router._edge_cache = {}
-    
-    # Simple edge cache to avoid redundant LLM calls if concept list hasn't changed
-    if not hasattr(router, "_graph_edge_cache"):
-        router._graph_edge_cache = {}
     
     # 1. Fetch unique concepts from Performance
     res = await db.execute(
@@ -251,7 +226,6 @@ async def get_course_mastery_graph(
             "score": performance_map.get(name, 0)
         })
         
-    # Check Cache
     cache_key = f"edges_{hash(tuple(sorted(all_names)))}"
     if cache_key in router._edge_cache:
         edges_list = router._edge_cache[cache_key]
@@ -693,6 +667,7 @@ async def get_material_heatmap(
     
     heatmap = [{"page": page or 1, "hits": count} for page, count in rows]
     return heatmap
+
 @router.post("/courses/{course_id}/enroll")
 async def enroll_in_course(
     course_id: int,
@@ -728,7 +703,6 @@ async def get_professor_analytics_overview(
 ):
     """Aggregated analytics across all courses taught by the professor."""
     check_professor(current_user)
-    from app.models.database import Course, PerformanceMetric, Enrollment, VivaResult, VivaAssessment
     
     # 1. Courses owned
     course_stmt = select(Course).where(Course.user_id == current_user.id)
@@ -779,7 +753,6 @@ async def get_viva_report(
 ):
     """Fetch detailed AI report for a specific student's Viva."""
     check_professor(current_user)
-    from app.models.database import VivaResult, User, VivaAssessment
     
     stmt = (
         select(VivaResult, User.name, User.email, VivaAssessment.title)

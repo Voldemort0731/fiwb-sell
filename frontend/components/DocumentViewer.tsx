@@ -8,7 +8,7 @@
  *   Parent → iframe: SCROLL_TO_PASSAGE, CLEAR_HIGHLIGHT
  *   iframe → Parent: VIEWER_READY, PAGE_VISIBLE, PASSAGE_READY, VIEWER_ERROR
  */
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import { useViewerStore, CitationData } from "@/lib/viewer-store";
 import { api } from "@/lib/api";
 import { X, ChevronLeft, RotateCcw, ExternalLink, ArrowLeftRight, Maximize2 } from "lucide-react";
@@ -43,6 +43,8 @@ export default function DocumentViewer() {
     // eslint-disable-next-line react-hooks/rules-of-hooks
     return [useViewerStore((state) => (state as any).urlType || "local"), (val: string) => useViewerStore.setState({ urlType: val } as any)];
   })() : ["local", () => {}];
+
+  const [materialDetails, setMaterialDetails] = useState<any | null>(null);
 
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -174,6 +176,29 @@ export default function DocumentViewer() {
 
     async function load() {
       setLoadingState("loading");
+      setMaterialDetails(null);
+
+      // Fetch material metadata/full text first to check type
+      try {
+        const details = await api.get(`/profile/materials/${docId}`);
+        if (!cancelled && details && !details.error) {
+          setMaterialDetails(details);
+          const isDocxOrTxt = details.title.toLowerCase().endsWith(".docx") || 
+                              details.title.toLowerCase().endsWith(".doc") || 
+                              details.title.toLowerCase().endsWith(".txt") ||
+                              details.title.toLowerCase().endsWith(".text") ||
+                              details.title.toLowerCase().endsWith(".md") ||
+                              (details.mime_type && !details.mime_type.includes("pdf"));
+
+          if (isDocxOrTxt) {
+            setUrlType("text");
+            setLoadingState("ready");
+            return;
+          }
+        }
+      } catch (err) {
+        console.error("Failed to fetch material details in viewer:", err);
+      }
 
       // Fetch the resolved URL and its type from the backend
       const result = await fetchDocUrl(docId!, "preview");
@@ -295,6 +320,83 @@ export default function DocumentViewer() {
   };
 
   if (!isOpen) return null;
+
+  if (urlType === "text") {
+    return (
+      <div
+        id="doc-viewer-panel"
+        style={{
+          width: "100%",
+          height: "100%",
+          display: "flex",
+          flexDirection: "column",
+          background: "var(--bg-primary, #ffffff)",
+          position: "relative",
+          overflow: "hidden",
+        }}
+      >
+        {/* ── Floating Premium Toolbar ── */}
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-1.5 p-1.5 rounded-2xl bg-white/40 backdrop-blur-xl border border-black/10 shadow-2xl transition-all hover:bg-white/60 group/toolbar">
+          {history.length > 0 && (
+            <button
+              onClick={() => goBack()}
+              title="Back"
+              className="p-1.5 hover:bg-black/10 rounded-xl text-black/50 hover:text-black transition-all active:scale-95"
+            >
+              <ChevronLeft size={16} />
+            </button>
+          )}
+
+          <div className="px-3 py-1.5 rounded-xl bg-black/5 border border-black/5 flex items-center gap-2 justify-center">
+            <span className="text-[11px] font-bold tracking-tight text-black/70 uppercase">
+              READER
+            </span>
+          </div>
+
+          <div className="w-[1px] h-4 bg-white/10 mx-1" />
+
+          {/* Maximize / Minimize toggle */}
+          <button
+            onClick={() => toggleMaximize()}
+            title={isViewerMaximized ? "Minimize focus" : "Maximize focus"}
+            className="p-1.5 hover:bg-purple-500/10 rounded-xl text-purple-600 hover:text-purple-700 transition-all"
+          >
+            {isViewerMaximized ? <Maximize2 size={16} className="rotate-180 scale-75" /> : <Maximize2 size={16} />}
+          </button>
+
+          <div className="w-[1px] h-4 bg-white/10 mx-1" />
+
+          {/* Swap sides */}
+          <button
+            onClick={() => toggleViewerPosition()}
+            title="Swap sides"
+            className="p-1.5 hover:bg-black/10 rounded-xl text-black/40 hover:text-black transition-all active:rotate-180"
+          >
+            <ArrowLeftRight size={16} />
+          </button>
+
+          {/* Close Viewer */}
+          <button
+            onClick={handleClose}
+            id="doc-viewer-close-btn"
+            className="p-1.5 hover:bg-red-500/10 rounded-xl text-black/40 hover:text-red-500 transition-all"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Text/Word Content Reader Panel */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "80px 32px 40px", color: "var(--text-primary)", lineHeight: 1.75, fontSize: 14.5 }}>
+          <h2 style={{ fontSize: 20, fontWeight: 800, color: "var(--text-primary)", marginBottom: 20, borderBottom: "1px solid var(--border)", paddingBottom: 16 }}>
+            {materialDetails?.title || "Document Reader"}
+          </h2>
+          <div style={{ whiteSpace: "pre-wrap", fontFamily: "var(--font-sans), system-ui", color: "var(--text-secondary)" }}>
+            {materialDetails?.full_text || materialDetails?.preview || "No readable content extracted for this document."}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div

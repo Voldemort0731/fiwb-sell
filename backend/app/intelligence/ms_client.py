@@ -1,47 +1,42 @@
 """
-Memsapien V3 client - ported from fiwb-mvp reference architecture.
-Handles all add/search/delete operations with proper retry logic.
+Supermemory client wrapper.
+Integrates the official supermemory SDK to perform add, search, and delete operations.
 """
-import httpx
-import json
-import asyncio
-import random
-import logging
 import os
+import logging
 from dotenv import load_dotenv
+from supermemory import AsyncSupermemory
 
-# Ensure .env is loaded before module-level constants are initialized
+import re
+
 load_dotenv()
 
 logger = logging.getLogger("uvicorn.error")
 
-MEMSAPIEN_API_KEY = os.getenv("MEMSAPIEN_API_KEY", "dummy_key") # Local V4 uses a key from .env
-MEMSAPIEN_URL = os.getenv("MEMSAPIEN_URL", "http://localhost:3003")
-# MEMSAPIEN_USER_EMAIL removed to prevent privacy leaks.
+SUPERMEMORY_API_KEY = os.getenv("SUPERMEMORY_API_KEY")
 
+
+def _sanitize_tag(tag: str) -> str:
+    """
+    Sanitize a container tag so it only contains alphanumeric chars,
+    hyphens, underscores, and colons — as required by Supermemory.
+    Email addresses like 'user@example.com' become 'user_example_com'.
+    """
+    return re.sub(r"[^a-zA-Z0-9\-_:]", "_", tag)
 
 class MemsapienClient:
     """
-    Memsapien V3 API client.
-    Creates its own dedicated httpx client with correct auth headers.
+    Supermemory SDK client wrapper.
+    Conforms to the legacy client interface to minimize other file modifications.
     """
 
     def __init__(self):
-        self.base_url = MEMSAPIEN_URL.rstrip("/")
-        self._headers = {
-            "User-Agent": "FIWB-AI/1.0",
-            "Content-Type": "application/json",
-        }
-        if MEMSAPIEN_API_KEY:
-            self._headers["Authorization"] = f"Bearer {MEMSAPIEN_API_KEY}"
-
-        self.client = httpx.AsyncClient(
-            headers=self._headers,
-            timeout=httpx.Timeout(30.0),
-            limits=httpx.Limits(max_connections=50, max_keepalive_connections=10),
-        )
-
-    # _effective_user_id logic removed to ensure strictly authenticated identity.
+        self.api_key = SUPERMEMORY_API_KEY
+        if self.api_key:
+            self.client = AsyncSupermemory(api_key=self.api_key)
+        else:
+            self.client = None
+            logger.warning("[SM] SUPERMEMORY_API_KEY is missing from the environment.")
 
     async def add_document(
         self,
@@ -53,8 +48,8 @@ class MemsapienClient:
         container_tag: str = None,
         project_id: str = "default",
     ):
-        """Add a document to Memsapien V4 with local ingestion."""
-        if not MEMSAPIEN_API_KEY:
+        """Add a document to Supermemory."""
+        if not self.client:
             logger.warning("[SM] No API key configured — skipping add_document")
             return None
 
@@ -69,100 +64,100 @@ class MemsapienClient:
             if description:
                 clean_meta["description"] = description[:500]
 
-            payload = {
-                "content": safe_content, 
-                "metadata": clean_meta,
-                "tenantId": container_tag or user_email,
-                "projectId": project_id,
-                "userId": user_email
-            }
+            ctag = _sanitize_tag(container_tag or user_email or "default")
 
-            response = await self.client.post(
-                f"{self.base_url}/v4/ingest", json=payload
+            res = await self.client.documents.add(
+                content=safe_content,
+                container_tag=ctag,
+                metadata=clean_meta
             )
-
-            if response.status_code in (400, 401):
-                logger.error(f"[SM] {response.status_code}: {response.text[:200]}")
-                return None
-
-            response.raise_for_status()
-            data = response.json()
-            logger.info(f"[SM] Queued doc for ingestion: {title or 'untitled'} (Job: {data.get('data', {}).get('jobId')})")
-            return data
+            logger.info(f"[SM] Queued doc for ingestion: {title or 'untitled'} (Job: {res.id})")
+            return {"success": True, "data": {"jobId": res.id}}
 
         except Exception as e:
             logger.error(f"[SM] add_document error: {e}")
             return None
 
     async def search(self, query: str, filters: dict = None, limit: int = 10, container_tag: str = None, user_id: str = "anonymous"):
-        """Search Memsapien V4 and return raw results."""
-        if not MEMSAPIEN_API_KEY:
+        """Search Supermemory and return a dict representation of results."""
+        if not self.client:
             return {"results": []}
 
         try:
             final_query = query.strip() if query and query.strip() else "*"
-            payload = {
-                "q": final_query, 
-                "limit": limit,
-                "containerTag": container_tag,
-                "userId": user_id
-            }
-            # Note: V4 filters are handled differently or via metadata in query
-            # For now, we pass the basic search payload
+            ctag = _sanitize_tag(container_tag or "default")
 
-            response = await self.client.post(
-                f"{self.base_url}/v4/search", json=payload
+            res = await self.client.search.execute(
+                q=final_query,
+                container_tag=ctag,
+                limit=limit
             )
-
-            if response.status_code == 401:
-                logger.error("[SM] 401 Unauthorized on search — check MEMSAPIEN_API_KEY")
-                return {"results": []}
-
-            if response.status_code != 200:
-                logger.warning(f"[SM] Search {response.status_code}: {response.text[:200]}")
-                return {"results": []}
-
-            data = response.json()
-            # V4 response structure is { success: true, data: { results: [...], ... } }
-            return data.get("data", {"results": []})
+            
+            results_dict = []
+            for doc in res.results:
+                chunks_dict = []
+                for chunk in doc.chunks:
+                    chunks_dict.append({
+                        "content": chunk.content,
+                        "score": chunk.score,
+                        "position": chunk.position,
+                        "isRelevant": chunk.is_relevant
+                    })
+                
+                results_dict.append({
+                    "documentId": doc.document_id,
+                    "title": doc.title,
+                    "metadata": doc.metadata,
+                    "score": doc.score,
+                    "type": doc.type,
+                    "updatedAt": doc.updated_at,
+                    "createdAt": doc.created_at,
+                    "chunks": chunks_dict,
+                    "summary": doc.summary,
+                    "content": doc.content
+                })
+            
+            return {"results": results_dict}
         except Exception as e:
             logger.error(f"[SM] Search error: {e}")
             return {"results": []}
 
     async def delete_document(self, document_id: str) -> bool:
-        """
-        V4 does not support individual document deletion yet via a dedicated endpoint.
-        We can use /v4/clear for full reset or ignore for now.
-        """
-        logger.warning("[SM] delete_document not fully supported in V4 local engine yet.")
-        return False
+        """Delete a document by its ID."""
+        if not self.client:
+            return False
+        try:
+            await self.client.documents.delete(id=document_id)
+            return True
+        except Exception as e:
+            logger.error(f"[SM] delete_document error: {e}")
+            return False
 
     async def delete_message_memories(self, user_email: str, message_id: int):
-        """Finds and deletes all enhanced memories associated with a specific assistant message ID."""
-        if not MEMSAPIEN_API_KEY:
+        """Finds and deletes all memories associated with a specific assistant message ID."""
+        if not self.client:
             return
             
         try:
-            filters = {
-                "AND": [
-                    {"key": "user_id", "value": user_email},
-                    {"key": "message_id", "value": str(message_id)}
-                ]
-            }
-            res = await self.search(query="*", filters=filters, limit=20)
+            ctag = _sanitize_tag(user_email or "default")
+            res = await self.search(query="*", limit=50, container_tag=ctag)
             
             docs_to_delete = res.get("results", [])
+            deleted_count = 0
             for doc in docs_to_delete:
-                doc_id = doc.get("documentId")
-                if doc_id:
-                    await self.delete_document(doc_id)
-                    
-            logger.info(f"[SM] Deleted {len(docs_to_delete)} docs for message_id {message_id}.")
+                meta = doc.get("metadata", {}) or {}
+                if str(meta.get("message_id")) == str(message_id):
+                    doc_id = doc.get("documentId")
+                    if doc_id:
+                        await self.delete_document(doc_id)
+                        deleted_count += 1
+                        
+            logger.info(f"[SM] Deleted {deleted_count} docs for message_id {message_id}.")
         except Exception as e:
             logger.error(f"[SM] Error deleting message memories: {e}")
 
     def flatten_v3(self, res):
-        """Flatten nested V3 results into chunks with parent metadata."""
+        """Flatten nested results into chunks with parent metadata."""
         if not res or not isinstance(res, dict):
             return []
         
@@ -170,12 +165,11 @@ class MemsapienClient:
         for doc in res.get("results", []):
             doc_id = doc.get("documentId")
             doc_title = doc.get("title")
-            meta = doc.get("metadata", {})
+            meta = doc.get("metadata", {}) or {}
             if doc_title and "title" not in meta:
                 meta["title"] = doc_title
                 
             for chunk in doc.get("chunks", []):
-                # 🚀 SANITY CHECK: Softened binary filter (Refined in Step 2562)
                 content = chunk.get("content", "")
                 if any(x in content for x in ["PK\x03\x04", "PK\x01\x02", "PK\x05\x06", "PK\x07\x08"]):
                     continue
@@ -186,7 +180,6 @@ class MemsapienClient:
                     if (printable_count / len(sample)) < 0.3:
                         continue
                 
-                # Combine doc metadata, chunk metadata, and doc_id
                 chunk_meta = {**meta, **chunk.get("metadata", {})}
                 chunk_meta["documentId"] = doc_id
                 all_chunks.append({"content": content, "metadata": chunk_meta})

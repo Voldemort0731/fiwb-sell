@@ -5,6 +5,7 @@ import { ClipboardList, Play, CheckCircle, Clock, AlertCircle, ChevronRight, Fil
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useRouter } from "next/navigation";
+import { motion } from "framer-motion";
 
 export default function StudentAssignments() {
   const [assignments, setAssignments] = useState<any[]>([]);

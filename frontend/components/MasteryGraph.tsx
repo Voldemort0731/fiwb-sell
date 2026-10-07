@@ -112,8 +112,8 @@ interface MasteryGraphProps {
 }
 
 function MasteryGraphContent({ data, onConceptClick, height }: MasteryGraphProps) {
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<any>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<any>([]);
   const { fitView } = useReactFlow();
 
   const lastDataRef = React.useRef<string>("");

@@ -2,6 +2,9 @@
 import { useEffect, useState, use, MouseEvent } from "react";
 import { api } from "@/lib/api";
 import Link from "next/link";
+import { useViewerStore } from "@/lib/viewer-store";
+import DocumentViewer from "@/components/DocumentViewer";
+import { motion, AnimatePresence } from "framer-motion";
 
 interface Attachment {
   type: "drive" | "video" | "link" | "form";
@@ -93,6 +96,20 @@ export default function CoursePage({ params }: { params: Promise<{ courseId: str
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
 
+  // Viewer state integration
+  const isFileOpen = useViewerStore((state) => state.isOpen);
+  const openViewer = useViewerStore((state) => state.openViewer);
+  const closeViewer = useViewerStore((state) => state.closeViewer);
+  const isViewerMaximized = useViewerStore((state) => state.isMaximized);
+  const viewerWidth = useViewerStore((state) => state.viewerWidth);
+
+  // Close viewer when leaving the course page
+  useEffect(() => {
+    return () => {
+      closeViewer();
+    };
+  }, [closeViewer]);
+
   useEffect(() => {
     if (!courseId || courseId === "undefined" || courseId === "null") {
       setLoading(false);
@@ -163,254 +180,309 @@ export default function CoursePage({ params }: { params: Promise<{ courseId: str
   return (
     <div style={{
       height: "100vh",
-      overflowY: "auto",
-      padding: "40px 60px",
+      width: "100vw",
+      display: "flex",
+      overflow: "hidden",
       background: "var(--bg-primary)",
-      color: "var(--text-primary)",
-      backgroundImage: "radial-gradient(var(--border) 1px, transparent 0)",
-      backgroundSize: "40px 40px"
     }}>
-      {/* Back Nav */}
-      <Link href="/profile" style={{
-        padding: "10px 14px",
-        background: "var(--bg-card)",
-        border: "1px solid var(--border)",
-        borderRadius: 8,
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 8,
-        color: "var(--text-secondary)",
-        textDecoration: "none",
-        fontSize: 11,
-        fontWeight: 700,
-        letterSpacing: "0.1em",
-        marginBottom: 32,
-        textTransform: "uppercase"
+      {/* Materials grid panel */}
+      <div style={{
+        flex: isFileOpen ? `1 1 ${100 - viewerWidth}%` : "1 1 100%",
+        height: "100%",
+        overflowY: "auto",
+        padding: "40px 60px",
+        backgroundImage: "radial-gradient(var(--border) 1px, transparent 0)",
+        backgroundSize: "40px 40px",
+        transition: "flex 0.3s ease"
       }}>
-        <span style={{ fontSize: 16 }}>←</span> Back to Dashboard
-      </Link>
+        {/* Back Nav */}
+        <Link href="/profile" style={{
+          padding: "10px 14px",
+          background: "var(--bg-card)",
+          border: "1px solid var(--border)",
+          borderRadius: 8,
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 8,
+          color: "var(--text-secondary)",
+          textDecoration: "none",
+          fontSize: 11,
+          fontWeight: 700,
+          letterSpacing: "0.1em",
+          marginBottom: 32,
+          textTransform: "uppercase"
+        }}>
+          <span style={{ fontSize: 16 }}>←</span> Back to Dashboard
+        </Link>
 
-      {/* Header */}
-      <div style={{ marginBottom: 40 }}>
-        <span style={{
-          background: "rgba(6, 182, 212, 0.1)", color: "#06b6d4",
-          fontSize: 10, fontWeight: 700, padding: "4px 10px", borderRadius: 4,
-          letterSpacing: "0.1em", marginBottom: 12, display: "inline-block"
-        }}>GOOGLE CLASSROOM</span>
-        <h1 style={{ fontSize: 38, fontWeight: 700, marginBottom: 8, letterSpacing: "-0.02em" }}>{course.name}</h1>
-        <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
-          {course.teacher && (
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <div style={{
-                width: 22, height: 22, borderRadius: "50%", background: "var(--accent)",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                fontSize: 11, fontWeight: 700, color: "#fff"
-              }}>{course.teacher[0]}</div>
-              <span style={{ fontSize: 13, color: "var(--text-muted)" }}>{course.teacher}</span>
+        {/* Header */}
+        <div style={{ marginBottom: 40 }}>
+          <span style={{
+            background: "rgba(6, 182, 212, 0.1)", color: "#06b6d4",
+            fontSize: 10, fontWeight: 700, padding: "4px 10px", borderRadius: 4,
+            letterSpacing: "0.1em", marginBottom: 12, display: "inline-block"
+          }}>GOOGLE CLASSROOM</span>
+          <h1 style={{ fontSize: 38, fontWeight: 700, marginBottom: 8, letterSpacing: "-0.02em" }}>{course.name}</h1>
+          <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
+            {course.teacher && (
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{
+                  width: 22, height: 22, borderRadius: "50%", background: "var(--accent)",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 11, fontWeight: 700, color: "#fff"
+                }}>{course.teacher[0]}</div>
+                <span style={{ fontSize: 13, color: "var(--text-muted)" }}>{course.teacher}</span>
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 10 }}>
+              {[
+                { n: totalCount, label: "total", color: "#06b6d4" },
+                { n: assignmentCount, label: "assignments", color: "#8b5cf6" },
+                { n: announcementCount, label: "announcements", color: "#06b6d4" },
+                { n: resourceCount, label: "resources", color: "#10b981" },
+                { n: fileCount, label: "files", color: "#f59e0b" },
+              ].filter(b => b.n > 0).map(b => (
+                <span key={b.label} style={{
+                  background: `${b.color}18`, border: `1px solid ${b.color}40`,
+                  color: b.color, fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 20
+                }}>{b.n} {b.label}</span>
+              ))}
             </div>
-          )}
-          <div style={{ display: "flex", gap: 10 }}>
-            {[
-              { n: totalCount, label: "total", color: "#06b6d4" },
-              { n: assignmentCount, label: "assignments", color: "#8b5cf6" },
-              { n: announcementCount, label: "announcements", color: "#06b6d4" },
-              { n: resourceCount, label: "resources", color: "#10b981" },
-              { n: fileCount, label: "files", color: "#f59e0b" },
-            ].filter(b => b.n > 0).map(b => (
-              <span key={b.label} style={{
-                background: `${b.color}18`, border: `1px solid ${b.color}40`,
-                color: b.color, fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 20
-              }}>{b.n} {b.label}</span>
-            ))}
           </div>
         </div>
-      </div>
 
-      {/* Tab Bar + Search */}
-      <div style={{
-        display: "flex", justifyContent: "space-between", alignItems: "flex-end",
-        marginBottom: 28, borderBottom: "1px solid var(--border)", paddingBottom: 0
-      }}>
-        <div style={{ display: "flex", gap: 4 }}>
-          {tabs.map(tab => {
-            const isActive = activeTab === tab.id;
-            return (
-              <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{
-                background: isActive ? "var(--accent)" : "transparent",
-                border: "none", cursor: "pointer",
-                padding: "9px 20px",
-                borderRadius: "6px 6px 0 0",
-                fontSize: 11, fontWeight: 700,
-                color: isActive ? "#fff" : "var(--text-muted)",
-                transition: "all 0.15s", letterSpacing: "0.05em"
-              }}>{tab.label}</button>
-            );
-          })}
+        {/* Tab Bar + Search */}
+        <div style={{
+          display: "flex", justifyContent: "space-between", alignItems: "flex-end",
+          marginBottom: 28, borderBottom: "1px solid var(--border)", paddingBottom: 0
+        }}>
+          <div style={{ display: "flex", gap: 4 }}>
+            {tabs.map(tab => {
+              const isActive = activeTab === tab.id;
+              return (
+                <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{
+                  background: isActive ? "var(--accent)" : "transparent",
+                  border: "none", cursor: "pointer",
+                  padding: "9px 20px",
+                  borderRadius: "6px 6px 0 0",
+                  fontSize: 11, fontWeight: 700,
+                  color: isActive ? "#fff" : "var(--text-muted)",
+                  transition: "all 0.15s", letterSpacing: "0.05em"
+                }}>{tab.label}</button>
+              );
+            })}
+          </div>
+          <div style={{ position: "relative", marginBottom: 8 }}>
+            <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: "var(--text-muted)", fontSize: 14 }}>🔍</span>
+            <input
+              type="text"
+              placeholder="Search materials..."
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              style={{
+                background: "var(--bg-secondary)", border: "1px solid var(--border)",
+                borderRadius: 30, padding: "9px 16px 9px 38px",
+                color: "var(--text-primary)", fontSize: 13, width: 240, outline: "none"
+              }}
+            />
+          </div>
         </div>
-        <div style={{ position: "relative", marginBottom: 8 }}>
-          <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: "var(--text-muted)", fontSize: 14 }}>🔍</span>
-          <input
-            type="text"
-            placeholder="Search materials..."
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            style={{
-              background: "var(--bg-secondary)", border: "1px solid var(--border)",
-              borderRadius: 30, padding: "9px 16px 9px 38px",
-              color: "var(--text-primary)", fontSize: 13, width: 240, outline: "none"
-            }}
-          />
-        </div>
-      </div>
 
-      {/* Material Cards */}
-      {filtered.length === 0 ? (
-        <EmptyState />
-      ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(380px, 1fr))", gap: 20 }}>
-          {filtered.map(mat => {
-            const meta = TYPE_META[mat.type] || TYPE_META["material"];
-            const atts = Array.isArray(mat.attachments) ? mat.attachments : [];
-            const hasClassroomLink = !!mat.source_link;
+        {/* Material Cards */}
+        {filtered.length === 0 ? (
+          <EmptyState />
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(380px, 1fr))", gap: 20 }}>
+            {filtered.map(mat => {
+              const meta = TYPE_META[mat.type] || TYPE_META["material"];
+              const atts = Array.isArray(mat.attachments) ? mat.attachments : [];
+              const hasClassroomLink = !!mat.source_link;
 
-            return (
-              <div
-                key={mat.id}
-                className="glass"
-                style={{
-                  padding: 20,
-                  border: "1px solid var(--border)",
-                  borderRadius: 14,
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 14,
-                }}
-              >
-                {/* Card Header */}
-                <div style={{ display: "flex", alignItems: "flex-start", gap: 14 }}>
-                  <div style={{
-                    width: 44, height: 44, borderRadius: 10,
-                    background: meta.color,
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    fontSize: 22, flexShrink: 0
-                  }}>{meta.icon}</div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
+              return (
+                <div
+                  key={mat.id}
+                  className="glass"
+                  style={{
+                    padding: 20,
+                    border: "1px solid var(--border)",
+                    borderRadius: 14,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 14,
+                    cursor: "pointer",
+                    transition: "transform 0.2s, border-color 0.2s",
+                  }}
+                  onClick={() => {
+                    const citation = {
+                      docId: String(mat.id),
+                      passageId: `direct:${mat.id}`,
+                      pageNumber: 1,
+                      highlightText: "",
+                      label: mat.title
+                    };
+                    openViewer(citation);
+                  }}
+                  onMouseEnter={e => {
+                    e.currentTarget.style.borderColor = "var(--accent)";
+                    e.currentTarget.style.transform = "translateY(-2px)";
+                  }}
+                  onMouseLeave={e => {
+                    e.currentTarget.style.borderColor = "var(--border)";
+                    e.currentTarget.style.transform = "none";
+                  }}
+                >
+                  {/* Card Header */}
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 14 }}>
                     <div style={{
-                      fontSize: 14, fontWeight: 600, lineHeight: 1.35,
-                      marginBottom: 4,
+                      width: 44, height: 44, borderRadius: 10,
+                      background: meta.color,
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      fontSize: 22, flexShrink: 0
+                    }}>{meta.icon}</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{
+                        fontSize: 14, fontWeight: 600, lineHeight: 1.35,
+                        marginBottom: 4,
+                        overflow: "hidden",
+                        display: "-webkit-box",
+                        WebkitLineClamp: 2,
+                        WebkitBoxOrient: "vertical",
+                      }}>{mat.title}</div>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                        <span style={{
+                          fontSize: 9, fontWeight: 800, letterSpacing: "0.08em",
+                          color: "var(--text-muted)", textTransform: "uppercase",
+                          background: "var(--bg-secondary)", padding: "2px 6px", borderRadius: 4
+                        }}>{meta.label}</span>
+                        <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                          {new Date(mat.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                        </span>
+                        {mat.due_date && (
+                          <span style={{ fontSize: 10, color: "#f59e0b", fontWeight: 700 }}>
+                            Due {new Date(mat.due_date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    {hasClassroomLink && (
+                      <button
+                        onClick={(e) => openInClassroom(mat, e)}
+                        title="Open in Google Classroom"
+                        style={{
+                          background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.2)",
+                          borderRadius: 8, padding: "6px 10px", cursor: "pointer",
+                          fontSize: 11, fontWeight: 700, color: "#06b6d4", flexShrink: 0,
+                          letterSpacing: "0.05em",
+                        }}
+                      >↗</button>
+                    )}
+                  </div>
+
+                  {/* Preview Text */}
+                  {(mat.preview || mat.full_text) && (
+                    <p style={{
+                      fontSize: 12.5, color: "var(--text-muted)", lineHeight: 1.55,
+                      margin: 0,
                       overflow: "hidden",
                       display: "-webkit-box",
-                      WebkitLineClamp: 2,
+                      WebkitLineClamp: 3,
                       WebkitBoxOrient: "vertical",
-                    }}>{mat.title}</div>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                      <span style={{
-                        fontSize: 9, fontWeight: 800, letterSpacing: "0.08em",
-                        color: "var(--text-muted)", textTransform: "uppercase",
-                        background: "var(--bg-secondary)", padding: "2px 6px", borderRadius: 4
-                      }}>{meta.label}</span>
-                      <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
-                        {new Date(mat.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
-                      </span>
-                      {mat.due_date && (
-                        <span style={{ fontSize: 10, color: "#f59e0b", fontWeight: 700 }}>
-                          Due {new Date(mat.due_date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                        </span>
-                      )}
+                    }}>
+                      {mat.preview || mat.full_text}
+                    </p>
+                  )}
+
+                  {/* Attachments */}
+                  {atts.length > 0 && (
+                    <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12 }}>
+                      <div style={{
+                        fontSize: 9, fontWeight: 800, letterSpacing: "0.1em",
+                        color: "var(--text-muted)", textTransform: "uppercase", marginBottom: 8
+                      }}>
+                        📎 Attachments ({atts.length})
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        {atts.map((att, idx) => {
+                          const icon = getAttachmentIcon(att.file_type);
+                          const color = getAttachmentColor(att.file_type);
+                          const badge = getFileTypeBadge(att.file_type);
+                          return (
+                            <button
+                              key={idx}
+                              onClick={(e) => openAttachment(att, e)}
+                              style={{
+                                display: "flex", alignItems: "center", gap: 10,
+                                background: "var(--bg-secondary)",
+                                border: "1px solid var(--border)",
+                                borderRadius: 8, padding: "8px 12px",
+                                cursor: "pointer", textAlign: "left",
+                                transition: "all 0.15s",
+                                width: "100%",
+                              }}
+                              onMouseEnter={e => {
+                                (e.currentTarget as HTMLButtonElement).style.borderColor = color;
+                                (e.currentTarget as HTMLButtonElement).style.background = `${color}15`;
+                              }}
+                              onMouseLeave={e => {
+                                (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--border)";
+                                (e.currentTarget as HTMLButtonElement).style.background = "var(--bg-secondary)";
+                              }}
+                            >
+                              <span style={{ fontSize: 18, flexShrink: 0 }}>{icon}</span>
+                              <span style={{
+                                fontSize: 12.5, fontWeight: 600, color: "var(--text-primary)",
+                                flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"
+                              }}>{att.title}</span>
+                              <span style={{
+                                fontSize: 9, fontWeight: 800, letterSpacing: "0.06em",
+                                color, textTransform: "uppercase",
+                                background: `${color}20`, padding: "2px 6px", borderRadius: 4, flexShrink: 0
+                              }}>{badge}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
-                  {hasClassroomLink && (
-                    <button
-                      onClick={(e) => openInClassroom(mat, e)}
-                      title="Open in Google Classroom"
-                      style={{
-                        background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.2)",
-                        borderRadius: 8, padding: "6px 10px", cursor: "pointer",
-                        fontSize: 11, fontWeight: 700, color: "#06b6d4", flexShrink: 0,
-                        letterSpacing: "0.05em",
-                      }}
-                    >↗</button>
+                  )}
+
+                  {/* Footer */}
+                  {atts.length === 0 && !hasClassroomLink && (
+                    <div style={{ fontSize: 10, color: "var(--text-muted)", letterSpacing: "0.06em", marginTop: "auto" }}>
+                      NO ATTACHMENTS
+                    </div>
                   )}
                 </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
-                {/* Preview Text */}
-                {(mat.preview || mat.full_text) && (
-                  <p style={{
-                    fontSize: 12.5, color: "var(--text-muted)", lineHeight: 1.55,
-                    margin: 0,
-                    overflow: "hidden",
-                    display: "-webkit-box",
-                    WebkitLineClamp: 3,
-                    WebkitBoxOrient: "vertical",
-                  }}>
-                    {mat.preview || mat.full_text}
-                  </p>
-                )}
-
-                {/* Attachments */}
-                {atts.length > 0 && (
-                  <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12 }}>
-                    <div style={{
-                      fontSize: 9, fontWeight: 800, letterSpacing: "0.1em",
-                      color: "var(--text-muted)", textTransform: "uppercase", marginBottom: 8
-                    }}>
-                      📎 Attachments ({atts.length})
-                    </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                      {atts.map((att, idx) => {
-                        const icon = getAttachmentIcon(att.file_type);
-                        const color = getAttachmentColor(att.file_type);
-                        const badge = getFileTypeBadge(att.file_type);
-                        return (
-                          <button
-                            key={idx}
-                            onClick={(e) => openAttachment(att, e)}
-                            style={{
-                              display: "flex", alignItems: "center", gap: 10,
-                              background: "var(--bg-secondary)",
-                              border: "1px solid var(--border)",
-                              borderRadius: 8, padding: "8px 12px",
-                              cursor: "pointer", textAlign: "left",
-                              transition: "all 0.15s",
-                              width: "100%",
-                            }}
-                            onMouseEnter={e => {
-                              (e.currentTarget as HTMLButtonElement).style.borderColor = color;
-                              (e.currentTarget as HTMLButtonElement).style.background = `${color}15`;
-                            }}
-                            onMouseLeave={e => {
-                              (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--border)";
-                              (e.currentTarget as HTMLButtonElement).style.background = "var(--bg-secondary)";
-                            }}
-                          >
-                            <span style={{ fontSize: 18, flexShrink: 0 }}>{icon}</span>
-                            <span style={{
-                              fontSize: 12.5, fontWeight: 600, color: "var(--text-primary)",
-                              flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"
-                            }}>{att.title}</span>
-                            <span style={{
-                              fontSize: 9, fontWeight: 800, letterSpacing: "0.06em",
-                              color, textTransform: "uppercase",
-                              background: `${color}20`, padding: "2px 6px", borderRadius: 4, flexShrink: 0
-                            }}>{badge}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {/* Footer */}
-                {atts.length === 0 && !hasClassroomLink && (
-                  <div style={{ fontSize: 10, color: "var(--text-muted)", letterSpacing: "0.06em", marginTop: "auto" }}>
-                    NO ATTACHMENTS
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
+      {/* Split Document Viewer Panel */}
+      <AnimatePresence mode="popLayout">
+        {isFileOpen && (
+          <div
+            style={{
+              flex: isViewerMaximized ? "0 0 100%" : `0 0 ${viewerWidth}%`,
+              height: "100%",
+              overflow: "hidden",
+              borderLeft: "1px solid var(--border)",
+              transition: "flex 0.3s ease",
+              background: "var(--bg-primary)"
+            }}
+          >
+            <motion.div
+              initial={{ width: 0, opacity: 0 }}
+              animate={{ width: "100%", opacity: 1 }}
+              exit={{ width: 0, opacity: 0 }}
+              transition={{ type: "spring", bounce: 0, duration: 0.4 }}
+              style={{ height: "100%", width: "100%", overflow: "hidden", position: "relative" }}
+            >
+              <DocumentViewer />
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

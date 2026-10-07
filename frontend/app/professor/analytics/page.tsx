@@ -121,23 +121,59 @@ export default function ProfessorAnalytics() {
                </div>
 
                <div style={{ display: "grid", gap: 16 }}>
-                  <div style={{ padding: 16, background: "rgba(139, 92, 246, 0.03)", borderRadius: 12 }}>
-                     <p style={{ fontSize: 12, color: "var(--accent)", fontWeight: 700, marginBottom: 8, textTransform: "uppercase" }}>Strengths</p>
-                     <ul style={{ paddingLeft: 16, fontSize: 13, color: "var(--text-secondary)" }}>
-                        {selectedResult.report.strengths.map((s: string, i: number) => <li key={i}>{s}</li>)}
-                     </ul>
+                  {/* Strengths Card */}
+                  <div style={{ padding: 16, background: "rgba(16, 185, 129, 0.04)", borderRadius: 12, border: "1px solid rgba(16, 185, 129, 0.18)" }}>
+                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                       <span style={{ fontSize: 12, color: "#10b981", fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.04em" }}>🏆 Verified Strengths</span>
+                       <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: "rgba(16, 185, 129, 0.15)", color: "#10b981", fontWeight: 700 }}>
+                         {selectedResult.report.strengths?.length || 0} Topics
+                       </span>
+                     </div>
+                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        {selectedResult.report.strengths.map((s: string, i: number) => (
+                           <div key={i} style={{ fontSize: 13, color: "var(--text-primary)", display: "flex", alignItems: "flex-start", gap: 6, fontWeight: 500 }}>
+                              <span style={{ color: "#10b981", fontWeight: 800 }}>•</span>
+                              <span>{s}</span>
+                           </div>
+                        ))}
+                     </div>
                   </div>
-                  <div style={{ padding: 16, background: "rgba(245, 158, 11, 0.03)", borderRadius: 12 }}>
-                     <p style={{ fontSize: 12, color: "var(--amber)", fontWeight: 700, marginBottom: 8, textTransform: "uppercase" }}>Knowledge Gaps</p>
-                     <ul style={{ paddingLeft: 16, fontSize: 13, color: "var(--text-secondary)" }}>
-                        {selectedResult.report.gaps.map((g: string, i: number) => <li key={i}>{g}</li>)}
-                     </ul>
+
+                  {/* Knowledge Gaps Card */}
+                  <div style={{ padding: 16, background: "rgba(245, 158, 11, 0.04)", borderRadius: 12, border: "1px solid rgba(245, 158, 11, 0.18)" }}>
+                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                       <span style={{ fontSize: 12, color: "#f59e0b", fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.04em" }}>💡 Knowledge Gaps</span>
+                       <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: "rgba(245, 158, 11, 0.15)", color: "#f59e0b", fontWeight: 700 }}>
+                         Action Item
+                       </span>
+                     </div>
+                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        {selectedResult.report.gaps.map((g: string, i: number) => (
+                           <div key={i} style={{ fontSize: 13, color: "var(--text-primary)", display: "flex", alignItems: "flex-start", gap: 6, fontWeight: 500 }}>
+                              <span style={{ color: "#f59e0b", fontWeight: 800 }}>•</span>
+                              <span>{g}</span>
+                           </div>
+                        ))}
+                     </div>
                   </div>
-                  <div style={{ padding: 16, background: "rgba(0,0,0,0.02)", borderRadius: 12 }}>
-                     <p style={{ fontSize: 12, color: "var(--text-primary)", fontWeight: 700, marginBottom: 8, textTransform: "uppercase" }}>Assisted Grading Note</p>
-                     <p style={{ fontSize: 13, color: "var(--text-secondary)", fontStyle: "italic" }}>
-                        "{selectedResult.report.grading_note}"
-                     </p>
+
+                  {/* Assisted Grading Note Card */}
+                  <div style={{ padding: 16, background: "rgba(139, 92, 246, 0.04)", borderRadius: 12, border: "1px solid rgba(139, 92, 246, 0.18)" }}>
+                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                       <span style={{ fontSize: 12, color: "#8b5cf6", fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.04em" }}>🤖 Assisted Grading Synthesis</span>
+                     </div>
+                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        {(selectedResult.report.grading_note || "")
+                          .split(/(?:\n+|\.\s+)/)
+                          .map((p: string) => p.trim())
+                          .filter((p: string) => p.length > 3)
+                          .map((notePoint: string, i: number) => (
+                            <div key={i} style={{ fontSize: 12.5, color: "var(--text-secondary)", display: "flex", alignItems: "flex-start", gap: 6, lineHeight: 1.5 }}>
+                              <span style={{ color: "#8b5cf6", fontWeight: 700 }}>✓</span>
+                              <span>{notePoint.endsWith(".") ? notePoint : `${notePoint}.`}</span>
+                            </div>
+                          ))}
+                     </div>
                   </div>
                </div>
 

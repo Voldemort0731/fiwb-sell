@@ -167,12 +167,86 @@ export default function ProfessorDashboard() {
 
             <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 40 }}>
               <section>
-                <h2 style={{ fontSize: 20, fontWeight: 800, marginBottom: 24 }}>AI Strategic Synthesis</h2>
-                <div className="glass" style={{ padding: 32, minHeight: 200 }}>
-                  <p style={{ fontSize: 15, lineHeight: 1.8, color: "#444", whiteSpace: "pre-wrap" }}>
-                    {insight || "Select a course and upload materials to generate class-wide strategic insights."}
-                  </p>
-                </div>
+                <h2 style={{ fontSize: 20, fontWeight: 800, marginBottom: 20, display: "flex", alignItems: "center", gap: 8 }}>
+                  <span>AI Strategic Synthesis</span>
+                  <span style={{ fontSize: 11, padding: "3px 8px", borderRadius: 6, background: "rgba(139,92,246,0.1)", color: "#8b5cf6", fontWeight: 700 }}>
+                    Pointwise Executive Summary
+                  </span>
+                </h2>
+
+                {(() => {
+                  if (!insight) {
+                    return (
+                      <div className="glass" style={{ padding: 24, borderRadius: 16 }}>
+                        <p style={{ fontSize: 14, color: "var(--text-muted)", margin: 0 }}>
+                          Select a course and upload materials to generate class-wide strategic insights.
+                        </p>
+                      </div>
+                    );
+                  }
+
+                  const rawPoints = insight
+                    .split(/(?:\n+|\.\s+|\d+\.\s+)/)
+                    .map(p => p.trim())
+                    .filter(p => p.length > 5);
+
+                  const categories = [
+                    { title: "Cohort Strategic Overview", icon: "📊", tag: "Analytics", border: "#8b5cf6", bg: "rgba(139, 92, 246, 0.04)" },
+                    { title: "Core Pedagogical Bottleneck", icon: "💡", tag: "Curriculum Gap", border: "#f59e0b", bg: "rgba(245, 158, 11, 0.04)" },
+                    { title: "Targeted AI Reinforcement Action", icon: "🎯", tag: "Intervention", border: "#10b981", bg: "rgba(16, 185, 129, 0.04)" },
+                    { title: "Longitudinal Mastery Trajectory", icon: "🚀", tag: "Growth Rate", border: "#06b6d4", bg: "rgba(6, 182, 212, 0.04)" },
+                  ];
+
+                  const pointsToRender = rawPoints.length > 0 ? rawPoints : [insight];
+
+                  return (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                      {pointsToRender.map((pt, idx) => {
+                        const cat = categories[idx % categories.length];
+                        return (
+                          <div
+                            key={idx}
+                            className="glass"
+                            style={{
+                              padding: "16px 20px",
+                              borderRadius: 14,
+                              borderLeft: `4px solid ${cat.border}`,
+                              background: cat.bg,
+                              display: "flex",
+                              flexDirection: "column",
+                              gap: 8,
+                              boxShadow: "0 4px 14px rgba(0,0,0,0.04)",
+                            }}
+                          >
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                <span style={{ fontSize: 16 }}>{cat.icon}</span>
+                                <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)" }}>{cat.title}</span>
+                              </div>
+                              <span
+                                style={{
+                                  fontSize: 10,
+                                  fontWeight: 700,
+                                  padding: "2px 8px",
+                                  borderRadius: 6,
+                                  background: `${cat.border}18`,
+                                  color: cat.border,
+                                  textTransform: "uppercase",
+                                  letterSpacing: "0.04em",
+                                }}
+                              >
+                                {cat.tag}
+                              </span>
+                            </div>
+                            <p style={{ fontSize: 13.5, lineHeight: 1.6, color: "var(--text-secondary)", margin: 0, fontWeight: 500 }}>
+                              • {pt.endsWith(".") ? pt : `${pt}.`}
+                            </p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
               </section>
               <section>
                 <h2 style={{ fontSize: 20, fontWeight: 800, marginBottom: 24 }}>System Bottlenecks</h2>

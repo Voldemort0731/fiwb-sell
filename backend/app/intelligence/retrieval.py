@@ -7,8 +7,8 @@ import logging
 from typing import List, Dict, Optional
 from openai import AsyncOpenAI
 import os
-from sqlalchemy import select
-from app.models.database import AsyncSessionLocal, User
+from sqlalchemy import select, or_
+from app.models.database import AsyncSessionLocal, User, Material, Course, Enrollment
 from app.intelligence.ms_client import get_ms_client
 from app.services.openai_service import contextualize_query, get_openai_client
 
@@ -58,6 +58,88 @@ class RetrievalOrchestrator:
                 seen.add(doc_id)
             merged.append(item)
         return {"results": merged}
+
+    async def _local_sqlite_search(
+        self, query: str, enrolled_course_ids: List[int], user_id: Optional[int], limit: int = 15
+    ) -> List[Dict]:
+        """
+        Fallback: keyword search over Material.full_text in SQLite.
+        Returns chunk-formatted dicts compatible with flatten_v3 output.
+        """
+        chunks = []
+        keywords = [w.lower() for w in query.split() if len(w) > 3][:10]
+        if not keywords:
+            keywords = [query.lower()[:20]]
+
+        try:
+            async with AsyncSessionLocal() as db:
+                # Fetch materials from enrolled courses + personal materials
+                conditions = []
+                if enrolled_course_ids:
+                    conditions.append(Material.course_id.in_(enrolled_course_ids))
+                if user_id:
+                    conditions.append(Material.user_id == user_id)
+
+                if not conditions:
+                    return []
+
+                from sqlalchemy import or_ as _or
+                res = await db.execute(
+                    select(Material).where(_or(*conditions))
+                )
+                materials = res.scalars().all()
+
+                for mat in materials:
+                    text = mat.full_text or mat.content_preview or ""
+                    if not text:
+                        continue
+
+                    text_lower = text.lower()
+                    # Score by how many keywords appear
+                    score = sum(1 for kw in keywords if kw in text_lower)
+                    if score == 0:
+                        continue
+
+                    # Extract a relevant snippet (find first keyword hit)
+                    snippet_start = 0
+                    for kw in keywords:
+                        idx = text_lower.find(kw)
+                        if idx >= 0:
+                            snippet_start = max(0, idx - 200)
+                            break
+
+                    snippet = text[snippet_start:snippet_start + 800].strip()
+
+                    # Estimate page number (form 0C splits or ~2000 chars per page)
+                    page_num = 1
+                    if snippet_start > 0:
+                        if "\x0c" in text[:snippet_start]:
+                            page_num = text[:snippet_start].count("\x0c") + 1
+                        else:
+                            page_num = max(1, snippet_start // 2000 + 1)
+
+                    chunks.append({
+                        "content": snippet,
+                        "metadata": {
+                            "material_id": str(mat.id),
+                            "title": mat.title,
+                            "file_name": mat.title,
+                            "course_id": str(mat.course_id) if mat.course_id else None,
+                            "source": mat.source or "local",
+                            "source_link": mat.source_link,
+                            "type": "academic_material",
+                            "page_number": page_num,
+                            "_local_score": score,
+                        }
+                    })
+
+            # Sort by score descending, cap at limit
+            chunks.sort(key=lambda c: c["metadata"].get("_local_score", 0), reverse=True)
+            return chunks[:limit]
+
+        except Exception as e:
+            logger.error(f"[Retrieval] Local search error: {e}")
+            return []
 
     async def retrieve_context(
         self, query: str, query_type: str = "academic_question", history: List[Dict] = None
@@ -198,8 +280,23 @@ class RetrievalOrchestrator:
         # 🚀 STEP 5: FLATTEN
         flatten = self.sm.flatten_v3
 
+        course_chunks = flatten(course_res)
+
+        # 🔄 LOCAL FALLBACK: If Supermemory returned no course content (e.g. still indexing),
+        # fall back to direct keyword search over SQLite Material.full_text.
+        if not course_chunks and is_academic:
+            logger.info("[Retrieval] Supermemory has no course results — falling back to local SQLite search.")
+            course_chunks = await self._local_sqlite_search(
+                query=search_query,
+                enrolled_course_ids=enrolled_course_ids,
+                user_id=user_id,
+                limit=15,
+            )
+            if course_chunks:
+                logger.info(f"[Retrieval] Local SQLite fallback found {len(course_chunks)} chunks.")
+
         context_data = {
-            "course_context":    flatten(course_res),
+            "course_context":    course_chunks,
             "assistant_knowledge": flatten(asst_res),
             "chat_assets":       flatten(chat_res),
             "memories":          flatten(memory_res),
@@ -216,3 +313,4 @@ class RetrievalOrchestrator:
             f"profile={len(context_data['profile'])}"
         )
         return context_data
+

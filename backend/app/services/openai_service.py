@@ -113,8 +113,9 @@ Return a beautifully formatted markdown document with these sections:
 
 async def extract_mastery_from_chat(user_message: str, ai_response: str) -> List[Dict]:
     """SLM Tier: Detects concepts and estimated mastery levels (0.0-1.0)."""
-    system = """Analyze the chat and identify academic concepts discussed. 
-For each concept, estimate the student's mastery based on their questions/answers.
+    system = """Analyze the chat and identify broad, high-level academic topics or document titles discussed (e.g., 'Recursion & Algorithms', 'Real Estate Fundamentals', 'AI & Anthropic Architecture'). 
+Do NOT create hyper-fine or sub-bullet phrases (e.g., avoid 'drawbacks of AI in education' or 'base cases in recursion'). Keep concept names broad, clean, and grouped at the document/material level.
+For each broad concept, estimate the student's mastery based on their responses.
 Return JSON list: [{"concept": "string", "score": float}] where score is 0.0 to 1.0.
 Only return valid JSON."""
     

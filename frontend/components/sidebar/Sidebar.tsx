@@ -67,7 +67,7 @@ function ThreadItem({ t, pathname, setShowProfile, refreshThreads }: ThreadItemP
       className={`sidebar-nav-item ${pathname === `/chat/${t.id}` ? "active" : ""}`}
       draggable={!isEditing}
       onDragStart={handleDragStart}
-      style={{ fontSize: 13, position: "relative", display: "flex", alignItems: "center", paddingRight: isHovered && !isEditing ? "110px" : "12px", transition: "padding 0.2s", cursor: isEditing ? "text" : "grab" }}
+      style={{ fontSize: 14.5, fontWeight: 500, position: "relative", display: "flex", alignItems: "center", paddingRight: isHovered && !isEditing ? "110px" : "12px", transition: "padding 0.2s", cursor: isEditing ? "text" : "grab" }}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
@@ -98,14 +98,14 @@ function ThreadItem({ t, pathname, setShowProfile, refreshThreads }: ThreadItemP
         <div style={{ position: "absolute", right: 6, display: "flex", gap: 4, background: "var(--bg-secondary)", padding: "2px 4px", borderRadius: 6, boxShadow: "-8px 0 12px var(--bg-secondary)" }}>
           <button 
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); setIsEditing(true); }}
-            style={{ background: "none", border: "none", cursor: "pointer", fontSize: 11, padding: "2px 6px", opacity: 0.6, border: "1px solid var(--border)", borderRadius: 4 }}
+            style={{ background: "none", cursor: "pointer", fontSize: 11, padding: "2px 6px", opacity: 0.6, border: "1px solid var(--border)", borderRadius: 4 }}
             title="Rename"
           >
             Rename
           </button>
           <button 
             onClick={handleDelete}
-            style={{ background: "none", border: "none", cursor: "pointer", fontSize: 11, padding: "2px 6px", opacity: 0.6, border: "1px solid var(--border)", borderRadius: 4, color: "#ef4444" }}
+            style={{ background: "none", cursor: "pointer", fontSize: 11, padding: "2px 6px", opacity: 0.6, border: "1px solid var(--border)", borderRadius: 4, color: "#ef4444" }}
             title="Delete"
           >
             Delete
@@ -133,6 +133,7 @@ export default function Sidebar({ collapsed, setCollapsed }: { collapsed: boolea
         { href: "/chat/new", label: "New Chat" },
         { href: "/dashboard/courses", label: "My Courses" },
         { href: "/dashboard/progress", label: "Mastery Dashboard" },
+        { href: "/dashboard/practice", label: "Adaptive Practice" },
         { href: "/dashboard/assignments", label: "Assignments" },
         { href: "/profile", label: "Digital Twin" },
       ];
@@ -296,7 +297,7 @@ export default function Sidebar({ collapsed, setCollapsed }: { collapsed: boolea
               <span style={{ fontSize: 14, display: "flex", alignItems: "center", color: isCollapsed ? "var(--text-muted)" : "var(--accent)" }}>
                 {isCollapsed ? <Folder size={14} /> : <FolderOpen size={14} />}
               </span>
-              <span style={{ fontSize: 13, fontWeight: 600, color: isCollapsed ? "var(--text-muted)" : "var(--text-secondary)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              <span style={{ fontSize: 14.5, fontWeight: 600, color: isCollapsed ? "var(--text-muted)" : "var(--text-secondary)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {node.name}
               </span>
               <button 
@@ -373,12 +374,12 @@ export default function Sidebar({ collapsed, setCollapsed }: { collapsed: boolea
         gap: collapsed ? 12 : 0
       }}>
         {!collapsed && (
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <div style={{ width: 32, height: 32, borderRadius: 11, background: "#000", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, fontFamily: "'Times New Roman', Times, serif", flexShrink: 0, fontWeight: 400, paddingRight: 1 }}>F</div>
-            <span style={{ fontWeight: 400, fontSize: 16, letterSpacing: "0.05em", fontFamily: "serif" }}>FIWB</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <img src="/logo.png" alt="FIWB Logo" style={{ width: 32, height: 32, borderRadius: 8, objectFit: "cover" }} />
+            <span style={{ fontWeight: 600, fontSize: 16, letterSpacing: "0.05em", fontFamily: "sans-serif" }}>FIWB</span>
           </div>
         )}
-        {collapsed && <div style={{ width: 32, height: 32, borderRadius: 11, background: "#000", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, fontFamily: "'Times New Roman', Times, serif", flexShrink: 0, fontWeight: 400, paddingRight: 1 }}>F</div>}
+        {collapsed && <img src="/logo.png" alt="FIWB Logo" style={{ width: 32, height: 32, borderRadius: 8, objectFit: "cover" }} />}
         <button
           onClick={() => setCollapsed(!collapsed)}
           style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 14, padding: 4, borderRadius: 6, flexShrink: 0 }}
@@ -455,10 +456,19 @@ export default function Sidebar({ collapsed, setCollapsed }: { collapsed: boolea
         <div style={{ flex: 1, overflowY: "auto", padding: "0 8px 8px" }}>
           
           <div style={{ padding: "12px 8px 8px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-             <p style={{ fontSize: 10.5, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em" }}>Folders</p>
+             <p style={{ fontSize: 11.5, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.1em" }}>Folders</p>
              <button 
               onClick={() => setIsCreatingFolder(true)}
-              style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: "var(--accent)" }}
+              style={{
+                background: "rgba(204, 120, 71, 0.08)",
+                border: "1px solid rgba(204, 120, 71, 0.2)",
+                cursor: "pointer",
+                fontSize: 12,
+                fontWeight: 700,
+                color: "var(--accent)",
+                padding: "2px 10px",
+                borderRadius: 6,
+              }}
              >+ New</button>
           </div>
 
@@ -490,7 +500,7 @@ export default function Sidebar({ collapsed, setCollapsed }: { collapsed: boolea
             {Object.entries(chrono).map(([label, items]) =>
               items.length > 0 ? (
                 <div key={label}>
-                  <p style={{ fontSize: 10.5, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", padding: "12px 8px 4px" }}>{label}</p>
+                  <p style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.1em", padding: "14px 8px 5px" }}>{label}</p>
                   {items.map((t) => (
                     <ThreadItem key={t.id} t={t} pathname={pathname} setShowProfile={setShowProfile} refreshThreads={fetchThreads} />
                   ))}

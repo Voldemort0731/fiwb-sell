@@ -138,28 +138,80 @@ async def get_student_mastery(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Retrieve concept-level mastery scores for the student."""
-    from app.models.database import PerformanceMetric
+    """Retrieve document-level mastery scores for the student."""
+    from app.models.database import PerformanceMetric, Material
     
-    # Fetch recent metrics grouped by concept
+    # 1. Fetch recent metrics
     res = await db.execute(
-        select(PerformanceMetric.concept, PerformanceMetric.value, PerformanceMetric.timestamp)
+        select(PerformanceMetric.concept, PerformanceMetric.value, PerformanceMetric.course_id, PerformanceMetric.timestamp)
         .where(PerformanceMetric.user_id == current_user.id, PerformanceMetric.metric_type == "concept_mastery")
         .order_by(PerformanceMetric.timestamp.desc())
     )
     rows = res.all()
-    # Build unique concept map (latest score)
-    mastery = {}
-    for concept, score, ts in rows:
-        if concept not in mastery:
-            mastery[concept] = {
-                "concept": concept,
-                "score": score,
-                "last_reviewed": ts.strftime("%Y-%m-%d")
-            }
+
+    # 2. Fetch all materials
+    res_mats = await db.execute(select(Material))
+    materials = res_mats.scalars().all()
+
+    # Helper function to find best material match
+    def find_best_material_match(concept, course_id):
+        course_mats = [m for m in materials if m.course_id == course_id]
+        if not course_mats:
+            return None
+        concept_lower = concept.lower()
+        if "neural" in concept_lower or "activation" in concept_lower:
+            match = [m for m in course_mats if "week 1" in m.title.lower() or "fundamentals" in m.title.lower()]
+            if match: return match[0].title
+        if "backpropagation" in concept_lower or "loss" in concept_lower or "optimizer" in concept_lower:
+            match = [m for m in course_mats if "week 2" in m.title.lower() or "intermediate" in m.title.lower()]
+            if match: return match[0].title
+        if "superposition" in concept_lower:
+            match = [m for m in course_mats if "week 1" in m.title.lower()]
+            if match: return match[0].title
+        if "qubit" in concept_lower or "gate" in concept_lower:
+            match = [m for m in course_mats if "week 2" in m.title.lower()]
+            if match: return match[0].title
+        if "dualism" in concept_lower or "mind" in concept_lower:
+            match = [m for m in course_mats if "week 1" in m.title.lower()]
+            if match: return match[0].title
+        if "functionalism" in concept_lower:
+            match = [m for m in course_mats if "week 2" in m.title.lower()]
+            if match: return match[0].title
             
-    # Filter for top N concepts
-    items = list(mastery.values())
+        for m in course_mats:
+            if m.title.lower() in concept_lower or concept_lower in m.title.lower():
+                return m.title
+        non_syllabus = [m for m in course_mats if "syllabus" not in m.title.lower()]
+        if non_syllabus:
+            return non_syllabus[0].title
+        return course_mats[0].title
+
+    # Map unique concepts to doc title, grouping scores & timestamps
+    doc_groups = {}
+    for concept, score, course_id, ts in rows:
+        doc_title = find_best_material_match(concept, course_id)
+        if not doc_title:
+            doc_title = concept
+        if doc_title not in doc_groups:
+            doc_groups[doc_title] = {
+                "scores": [],
+                "timestamps": []
+            }
+        doc_groups[doc_title]["scores"].append(score)
+        doc_groups[doc_title]["timestamps"].append(ts)
+
+    # Format into response items
+    items = []
+    for doc_title, data in doc_groups.items():
+        avg_score = sum(data["scores"]) / len(data["scores"])
+        latest_ts = max(data["timestamps"])
+        items.append({
+            "concept": doc_title,  # Keep key as 'concept' for frontend matching
+            "score": avg_score,
+            "last_reviewed": latest_ts.strftime("%Y-%m-%d")
+        })
+
+    # Sort descending by score
     items.sort(key=lambda x: x['score'], reverse=True)
     return items[:12] 
 
@@ -226,10 +278,250 @@ async def get_mastery_history(
     for row in res.all():
         history.append({
             "session": str(row.session_date),
-            "mastery": round(row.avg_mastery * 100) # Convert 0-1 to percentage
+            "mastery": round(row.avg_mastery * 100)
         })
-        
     return history
+
+
+@router.get("/mastery/analysis")
+async def get_mastery_analysis(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Provides Strengths, Weaknesses, and Concrete recommendations at the Document level."""
+    from app.models.database import PerformanceMetric, Material
+
+    # 1. Fetch recent concept metrics for the user
+    res = await db.execute(
+        select(PerformanceMetric.concept, PerformanceMetric.value, PerformanceMetric.course_id)
+        .where(PerformanceMetric.user_id == current_user.id, PerformanceMetric.metric_type == "concept_mastery")
+        .order_by(PerformanceMetric.timestamp.desc())
+    )
+    rows = res.all()
+    
+    # Extract unique concepts with their latest score and course_id
+    concept_scores = {}
+    for concept, score, course_id in rows:
+        if concept and concept not in concept_scores:
+            concept_scores[concept] = (score, course_id)
+
+    # 2. Fetch all materials from DB
+    res_mats = await db.execute(select(Material))
+    materials = res_mats.scalars().all()
+
+    # Helper function to find best material
+    def find_best_material_match(concept, course_id):
+        course_mats = [m for m in materials if m.course_id == course_id]
+        if not course_mats:
+            return None
+        concept_lower = concept.lower()
+        if "neural" in concept_lower or "activation" in concept_lower:
+            match = [m for m in course_mats if "week 1" in m.title.lower() or "fundamentals" in m.title.lower()]
+            if match: return match[0].title
+        if "backpropagation" in concept_lower or "loss" in concept_lower or "optimizer" in concept_lower:
+            match = [m for m in course_mats if "week 2" in m.title.lower() or "intermediate" in m.title.lower()]
+            if match: return match[0].title
+        if "superposition" in concept_lower:
+            match = [m for m in course_mats if "week 1" in m.title.lower()]
+            if match: return match[0].title
+        if "qubit" in concept_lower or "gate" in concept_lower:
+            match = [m for m in course_mats if "week 2" in m.title.lower()]
+            if match: return match[0].title
+        if "dualism" in concept_lower or "mind" in concept_lower:
+            match = [m for m in course_mats if "week 1" in m.title.lower()]
+            if match: return match[0].title
+        if "functionalism" in concept_lower:
+            match = [m for m in course_mats if "week 2" in m.title.lower()]
+            if match: return match[0].title
+            
+        for m in course_mats:
+            if m.title.lower() in concept_lower or concept_lower in m.title.lower():
+                return m.title
+        non_syllabus = [m for m in course_mats if "syllabus" not in m.title.lower()]
+        if non_syllabus:
+            return non_syllabus[0].title
+        return course_mats[0].title
+
+    # Map and group concepts to materials
+    doc_scores = {}
+    for concept, (score, course_id) in concept_scores.items():
+        doc_title = find_best_material_match(concept, course_id)
+        if not doc_title:
+            doc_title = concept
+        if doc_title not in doc_scores:
+            doc_scores[doc_title] = []
+        doc_scores[doc_title].append(score)
+
+    strengths = []
+    weaknesses = []
+
+    for doc_title, scores in doc_scores.items():
+        avg_score = sum(scores) / len(scores)
+        if avg_score >= 0.75:
+            strengths.append({
+                "concept": doc_title,  # Keep key as 'concept' to match frontend interfaces
+                "score": round(avg_score * 100),
+                "insights": [
+                    "You demonstrate advanced understanding of this document/material.",
+                    "Eligible to mentor other students struggling with this document.",
+                    "Review advanced assignments or applications of this document's content."
+                ]
+            })
+        elif avg_score < 0.55:
+            weaknesses.append({
+                "concept": doc_title,
+                "score": round(avg_score * 100),
+                "insights": [
+                    f"Initiate a targeted review session with FIWB on {doc_title}.",
+                    "Study slide summaries and run practice queries for this document.",
+                    "Focus on resolving structural gaps in this document's requirements."
+                ]
+            })
+
+    return {
+        "strengths": strengths,
+        "weaknesses": weaknesses,
+    }
+
+
+@router.get("/mastery/peers")
+async def get_matched_peers(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Find peers who excel in documents where the current user is struggling."""
+    from app.models.database import PerformanceMetric, User, Material
+
+    # 1. Fetch all materials
+    res_mats = await db.execute(select(Material))
+    materials = res_mats.scalars().all()
+
+    # Helper function to find best material
+    def find_best_material_match(concept, course_id):
+        course_mats = [m for m in materials if m.course_id == course_id]
+        if not course_mats:
+            return None
+        concept_lower = concept.lower()
+        if "neural" in concept_lower or "activation" in concept_lower:
+            match = [m for m in course_mats if "week 1" in m.title.lower() or "fundamentals" in m.title.lower()]
+            if match: return match[0].title
+        if "backpropagation" in concept_lower or "loss" in concept_lower or "optimizer" in concept_lower:
+            match = [m for m in course_mats if "week 2" in m.title.lower() or "intermediate" in m.title.lower()]
+            if match: return match[0].title
+        if "superposition" in concept_lower:
+            match = [m for m in course_mats if "week 1" in m.title.lower()]
+            if match: return match[0].title
+        if "qubit" in concept_lower or "gate" in concept_lower:
+            match = [m for m in course_mats if "week 2" in m.title.lower()]
+            if match: return match[0].title
+        if "dualism" in concept_lower or "mind" in concept_lower:
+            match = [m for m in course_mats if "week 1" in m.title.lower()]
+            if match: return match[0].title
+        if "functionalism" in concept_lower:
+            match = [m for m in course_mats if "week 2" in m.title.lower()]
+            if match: return match[0].title
+            
+        for m in course_mats:
+            if m.title.lower() in concept_lower or concept_lower in m.title.lower():
+                return m.title
+        non_syllabus = [m for m in course_mats if "syllabus" not in m.title.lower()]
+        if non_syllabus:
+            return non_syllabus[0].title
+        return course_mats[0].title
+
+    # 2. Fetch current user's concept scores and map to documents
+    res_curr = await db.execute(
+        select(PerformanceMetric.concept, PerformanceMetric.value, PerformanceMetric.course_id)
+        .where(PerformanceMetric.user_id == current_user.id, PerformanceMetric.metric_type == "concept_mastery")
+        .order_by(PerformanceMetric.timestamp.desc())
+    )
+    curr_concepts = {}
+    for concept, score, course_id in res_curr.all():
+        if concept and concept not in curr_concepts:
+            curr_concepts[concept] = (score, course_id)
+
+    curr_doc_scores = {}
+    for concept, (score, course_id) in curr_concepts.items():
+        doc_title = find_best_material_match(concept, course_id)
+        if not doc_title:
+            doc_title = concept
+        if doc_title not in curr_doc_scores:
+            curr_doc_scores[doc_title] = []
+        curr_doc_scores[doc_title].append(score)
+
+    weaknesses = []
+    for dtitle, scores in curr_doc_scores.items():
+        avg_score = sum(scores) / len(scores)
+        if avg_score < 0.55:
+            weaknesses.append(dtitle)
+
+    if not weaknesses:
+        for dtitle, scores in curr_doc_scores.items():
+            avg_score = sum(scores) / len(scores)
+            if avg_score < 0.75:
+                weaknesses.append(dtitle)
+
+    # 3. Fetch all other student users
+    res_users = await db.execute(
+        select(User).where(User.id != current_user.id, User.role == "student")
+    )
+    peers = res_users.scalars().all()
+
+    matches = []
+
+    for peer in peers:
+        res_peer_metrics = await db.execute(
+            select(PerformanceMetric.concept, PerformanceMetric.value, PerformanceMetric.course_id, PerformanceMetric.timestamp)
+            .where(PerformanceMetric.user_id == peer.id, PerformanceMetric.metric_type == "concept_mastery")
+            .order_by(PerformanceMetric.timestamp.asc())
+        )
+        
+        peer_concepts = {}
+        for concept, val, course_id, ts in res_peer_metrics.all():
+            if concept not in peer_concepts:
+                peer_concepts[concept] = []
+            peer_concepts[concept].append((val, course_id))
+
+        peer_doc_history = {}
+        for concept, entries in peer_concepts.items():
+            values = [val for val, cid in entries]
+            cid = entries[0][1]
+            doc_title = find_best_material_match(concept, cid)
+            if not doc_title:
+                doc_title = concept
+            if doc_title not in peer_doc_history:
+                peer_doc_history[doc_title] = []
+            peer_doc_history[doc_title].extend(values)
+
+        for doc_title in weaknesses:
+            if doc_title in peer_doc_history:
+                history = peer_doc_history[doc_title]
+                latest_val = sum(history[-2:]) / len(history[-2:]) if len(history) > 1 else history[0]
+                initial_val = sum(history[:2]) / len(history[:2]) if len(history) > 1 else history[0]
+
+                # Match Criteria:
+                if initial_val < 0.55 and latest_val >= 0.75:
+                    matches.append({
+                        "peer_name": peer.name or "Anonymous Peer",
+                        "peer_email": peer.email,
+                        "concept": doc_title,
+                        "match_type": "Improved Guide",
+                        "description": f"Struggled with {doc_title} initially ({round(initial_val * 100)}%) but successfully improved to {round(latest_val * 100)}%!",
+                        "peer_score": round(latest_val * 100)
+                    })
+                elif latest_val >= 0.75:
+                    matches.append({
+                        "peer_name": peer.name or "Anonymous Peer",
+                        "peer_email": peer.email,
+                        "concept": doc_title,
+                        "match_type": "Peer Mentor",
+                        "description": f"Excels in {doc_title} with {round(latest_val * 100)}% mastery score.",
+                        "peer_score": round(latest_val * 100)
+                    })
+
+    matches.sort(key=lambda x: x["peer_score"], reverse=True)
+    return matches[:8]
+
 
 @router.get("/mastery-graph")
 async def get_mastery_graph(
@@ -565,14 +857,22 @@ async def get_pdf_token(
     Only the authenticated owner of the material can request a token.
     """
     result = await db.execute(
-        select(Material).where(
-            Material.id == material_id,
-            Material.user_id == current_user.id,
-        )
+        select(Material).where(Material.id == material_id)
     )
     material = result.scalar_one_or_none()
     if not material:
         raise HTTPException(status_code=404, detail="Material not found")
+
+    if material.user_id != current_user.id:
+        from app.models.database import Enrollment
+        res_enroll = await db.execute(
+            select(Enrollment).where(
+                Enrollment.student_id == current_user.id,
+                Enrollment.course_id == material.course_id
+            )
+        )
+        if not res_enroll.scalar_one_or_none():
+            raise HTTPException(status_code=403, detail="Access denied to this course material")
     if not material.external_id and not material.file_content:
         raise HTTPException(status_code=400, detail="Material has no associated Drive file or local content")
 
@@ -685,14 +985,22 @@ async def redirect_to_drive_preview(
         raise HTTPException(status_code=401, detail=f"Invalid or expired token: {e}")
 
     result = await db.execute(
-        select(Material).where(
-            Material.id == material_id,
-            Material.user_id == user_id_from_token,
-        )
+        select(Material).where(Material.id == material_id)
     )
     material = result.scalar_one_or_none()
     if not material:
         raise HTTPException(status_code=404, detail="Material not found.")
+
+    if material.user_id != user_id_from_token:
+        from app.models.database import Enrollment
+        res_enroll = await db.execute(
+            select(Enrollment).where(
+                Enrollment.student_id == user_id_from_token,
+                Enrollment.course_id == material.course_id
+            )
+        )
+        if not res_enroll.scalar_one_or_none():
+            raise HTTPException(status_code=403, detail="Access denied to this course material")
 
     ext_id = material.external_id or ""
 
@@ -759,14 +1067,22 @@ async def serve_local_binary(
         raise HTTPException(status_code=401, detail=f"Invalid or expired token: {e}")
 
     result = await db.execute(
-        select(Material).where(
-            Material.id == material_id,
-            Material.user_id == user_id_from_token,
-        )
+        select(Material).where(Material.id == material_id)
     )
     material = result.scalar_one_or_none()
     if not material or not material.file_content:
         raise HTTPException(status_code=404, detail="Local binary content not found.")
+
+    if material.user_id != user_id_from_token:
+        from app.models.database import Enrollment
+        res_enroll = await db.execute(
+            select(Enrollment).where(
+                Enrollment.student_id == user_id_from_token,
+                Enrollment.course_id == material.course_id
+            )
+        )
+        if not res_enroll.scalar_one_or_none():
+            raise HTTPException(status_code=403, detail="Access denied to this course material")
 
     from fastapi import Response
     return Response(
@@ -794,14 +1110,22 @@ async def redirect_to_drive(
         raise HTTPException(status_code=401, detail=f"Invalid or expired token: {e}")
 
     result = await db.execute(
-        select(Material).where(
-            Material.id == material_id,
-            Material.user_id == user_id_from_token,
-        )
+        select(Material).where(Material.id == material_id)
     )
     material = result.scalar_one_or_none()
     if not material:
         raise HTTPException(status_code=404, detail="Material not found.")
+
+    if material.user_id != user_id_from_token:
+        from app.models.database import Enrollment
+        res_enroll = await db.execute(
+            select(Enrollment).where(
+                Enrollment.student_id == user_id_from_token,
+                Enrollment.course_id == material.course_id
+            )
+        )
+        if not res_enroll.scalar_one_or_none():
+            raise HTTPException(status_code=403, detail="Access denied to this course material")
 
     ext_id = material.external_id or ""
     is_drive_file = ext_id and not ext_id.isdigit() and len(ext_id) > 15
@@ -817,6 +1141,45 @@ async def redirect_to_drive(
         return {"url": material.source_link, "material_id": material_id, "type": "link"}
     else:
         raise HTTPException(status_code=404, detail="Material has no viewable Drive file or source link.")
+
+
+@router.get("/materials/{material_id}")
+async def get_material_details(
+    material_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Retrieve detailed info for a single material, including its full text."""
+    result = await db.execute(
+        select(Material).where(Material.id == material_id)
+    )
+    material = result.scalar_one_or_none()
+    if not material:
+        raise HTTPException(status_code=404, detail="Material not found")
+        
+    # Access control
+    if material.user_id != current_user.id:
+        from app.models.database import Enrollment
+        res_enroll = await db.execute(
+            select(Enrollment).where(
+                Enrollment.student_id == current_user.id,
+                Enrollment.course_id == material.course_id
+            )
+        )
+        if not res_enroll.scalar_one_or_none():
+            raise HTTPException(status_code=403, detail="Access denied to this course material")
+
+    return {
+        "id": material.id,
+        "title": material.title,
+        "type": material.material_type,
+        "source": material.source,
+        "preview": material.content_preview,
+        "full_text": material.full_text,
+        "mime_type": material.mime_type,
+        "created_at": material.created_at.isoformat()
+    }
+
 
 @router.delete("/materials/{material_id}")
 async def delete_material(

@@ -42,6 +42,7 @@ class User(Base):
     moodle_token: Mapped[Optional[str]] = mapped_column(String(255))
     role: Mapped[str] = mapped_column(String(20), default="student") # "student" or "professor"
     role_finalized: Mapped[bool] = mapped_column(Boolean, default=False)
+    mastery_elo: Mapped[int] = mapped_column(Integer, default=1000)
 
     threads: Mapped[List["ChatThread"]] = relationship("ChatThread", back_populates="user", cascade="all, delete-orphan")
     courses: Mapped[List["Course"]] = relationship("Course", back_populates="user", cascade="all, delete-orphan")
@@ -205,6 +206,42 @@ class Enrollment(Base):
 
     student: Mapped["User"] = relationship("User", back_populates="enrollments")
     course: Mapped["Course"] = relationship("Course", back_populates="enrollments")
+
+
+class PracticeQuiz(Base):
+    __tablename__ = "practice_quizzes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True)
+    course_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("courses.id"), nullable=True, index=True)
+    title: Mapped[str] = mapped_column(String(500))
+    quiz_type: Mapped[str] = mapped_column(String(50), default="weak_concepts")  # weak_concepts | topic_mastery
+    target_concepts: Mapped[str] = mapped_column(Text)  # JSON array of strings
+    difficulty: Mapped[str] = mapped_column(String(50), default="adaptive")  # adaptive, foundational, intermediate, advanced
+    questions_json: Mapped[str] = mapped_column(Text)  # JSON array of question objects
+    quiz_mode: Mapped[str] = mapped_column(String(50), default="standard_quiz")  # standard_quiz | interactive_socratic
+    status: Mapped[str] = mapped_column(String(50), default="pending")  # pending, completed
+    score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    user: Mapped["User"] = relationship("User")
+    course: Mapped[Optional["Course"]] = relationship("Course")
+
+
+class PracticeQuizAttempt(Base):
+    __tablename__ = "practice_quiz_attempts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    quiz_id: Mapped[int] = mapped_column(Integer, ForeignKey("practice_quizzes.id"), index=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True)
+    answers_json: Mapped[str] = mapped_column(Text)  # JSON object of answers submitted
+    score: Mapped[float] = mapped_column(Float)  # 0 - 100
+    feedback_json: Mapped[str] = mapped_column(Text)  # JSON breakdown per question + concept improvements
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    quiz: Mapped["PracticeQuiz"] = relationship("PracticeQuiz")
+    user: Mapped["User"] = relationship("User")
+
 
 
 async def init_db():

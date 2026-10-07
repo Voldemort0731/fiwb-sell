@@ -11,7 +11,7 @@ load_dotenv()
 
 from sqlalchemy import delete, and_, func, select
 from app.models.database import init_db, AsyncSessionLocal, Material
-from app.routers import auth, chat, integrations, profile, mindmap, professor
+from app.routers import auth, chat, integrations, profile, mindmap, professor, practice_quiz, vision
 
 
 async def _cleanup_stale_link_records():
@@ -90,6 +90,9 @@ app.include_router(integrations.router, prefix="/integrations", tags=["integrati
 app.include_router(profile.router, prefix="/profile", tags=["profile"])
 app.include_router(mindmap.router, tags=["mindmap"])
 app.include_router(professor.router)
+app.include_router(practice_quiz.router, prefix="/practice-quiz", tags=["practice-quiz"])
+app.include_router(vision.router, prefix="/vision", tags=["vision"])
+
 
 
 @app.get("/health")

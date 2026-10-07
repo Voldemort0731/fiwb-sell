@@ -21,6 +21,7 @@ from app.services.openai_service import (
 from app.intelligence.retrieval import RetrievalOrchestrator
 from app.intelligence.prompt_architect import PromptArchitect
 from app.intelligence.ms_client import get_ms_client
+from app.routers.vision import get_latest_facial_state
 import os
 import logging
 
@@ -649,6 +650,23 @@ async def _generate_chat_response(thread_id: int, content: str, image_base64: Op
                     f"document, answer using content from that page."
                 )
 
+            # ── Real-time DeepFace Facial Engagement Sensor Injection ───────
+            facial_state = get_latest_facial_state(current_user.id)
+            facial_hint = ""
+            if facial_state:
+                st = facial_state.get("state", "Neutral")
+                em = facial_state.get("emotion", "neutral")
+                score = facial_state.get("focus_score", 70)
+                conf = facial_state.get("confusion_level", "low")
+                insight = facial_state.get("actionable_insight", "")
+                facial_hint = (
+                    f"\n\n[REAL-TIME STUDENT FACIAL MONITORING FEEDBACK]\n"
+                    f"State: {st} | Emotion: {em} | Focus Score: {score}% | Confusion Level: {conf}\n"
+                    f"Actionable Insight: {insight}\n"
+                )
+                if conf in ("high", "medium") or st in ("Confused", "Frustrated"):
+                    facial_hint += "DIRECTIVE: The facial camera sensor detects the student is CURRENTLY CONFUSED. Simplify your explanation using a vivid real-world analogy, break it down step-by-step, and ask if this clears up their understanding."
+
             # Metadata packet to communicate user_message_id
             yield f"data: {json.dumps({'type': 'metadata', 'user_message_id': user_msg_id})}\n\n"
             yield f"data: {json.dumps({'type': 'triage', 'intent': query_type})}\n\n"
@@ -658,7 +676,7 @@ async def _generate_chat_response(thread_id: int, content: str, image_base64: Op
 
             # ── Step 2: Build structured messages (Dual Grounding) ──────────
             messages = PromptArchitect.build_messages(
-                user_query=query + viewer_hint,
+                user_query=query + viewer_hint + facial_hint,
                 retrieved_chunks=course_chunks,
                 assistant_knowledge=context.get("assistant_knowledge", []),
                 chat_assets=context.get("chat_assets", []),
